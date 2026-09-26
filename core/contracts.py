@@ -198,3 +198,32 @@ class GuardrailContent(_Doc):
 class HarnessGuardrails(_Doc):
     id: DocId = Field(alias="_id")  # sha256(content)
     content: GuardrailContent
+
+
+# --- §2 ada_cache and core/llm.py -------------------------------------------
+
+LlmRole = Literal["agent_v0", "frontier", "controller", "judge"]  # keys of harness/models.json (§7)
+
+
+class LlmCacheEntry(_Doc):
+    """One `ada_cache.llm_cache` document; unique (model_id, prompt_hash)."""
+
+    id: DocId | None = Field(default=None, alias="_id")
+    model_id: str
+    prompt_hash: str
+    request: dict[str, Any]
+    response: dict[str, Any]
+    usage: dict[str, Any] = Field(default_factory=dict)
+    ts: datetime
+
+
+class ChatResult(_Doc):
+    """What core.llm.cached_chat returns."""
+
+    role: LlmRole
+    model_id: str
+    prompt_hash: str
+    message: dict[str, Any]
+    usage: dict[str, Any] = Field(default_factory=dict)
+    cost_usd: Usd
+    cached: bool
