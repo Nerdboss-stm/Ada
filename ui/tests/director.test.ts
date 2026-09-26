@@ -16,6 +16,7 @@ import {
   replayLabel,
   sceneForKey,
   v0Line,
+  V0_WALK_LABEL,
 } from "../lib/director.ts";
 
 const cheatFixture = JSON.parse(readFileSync(new URL("../public/fixtures/cheat.json", import.meta.url), "utf8"));
@@ -46,6 +47,7 @@ const raw = {
     { _id: "v2", status: "accepted", metrics: { holdout_reliability_80: 0, cost_per_run_usd: 0.003994, n: 18 } },
   ],
   v0_walk: { frames_id: "92267354eb2aa3c7652eaa1c", distance_m: -0.0681, model_id: "openai/gpt-6-luna" },
+  v0_mean: { distance_m: -0.9712, tasks: 18 },
   v0_holdout: { passed: 0, runs: 18 },
   rewrite_cost_usd: null,
   swap: swapFixture,
@@ -112,13 +114,23 @@ test("parsePinned keeps what the scenes may use and nulls what they may not", ()
   assert.equal(parsePinned(null), null);
 });
 
-test("scene 1's line is read from the pin: showcase distance and model, metrics cost, holdout runs passed", () => {
+test("scene 1's line is v0's mean over its train and holdout tasks, read from the pin", () => {
   const p = parsePinned(raw);
   assert.ok(p);
-  assert.equal(v0Line(p), "-0.07 m · openai/gpt-6-luna · $0.0005 a gait · harness v0 · 0/18");
+  assert.deepEqual(p.v0_mean, { distance_m: -0.9712, tasks: 18 });
+  assert.equal(v0Line(p), "-0.97 m mean over 18 tasks · openai/gpt-6-luna · $0.0005 a gait · harness v0 · 0/18");
+  // The count is read, never typed.
+  assert.equal(v0Line({ ...p, v0_mean: { distance_m: 0.5, tasks: 12 } }), "0.50 m mean over 12 tasks · openai/gpt-6-luna · $0.0005 a gait · harness v0 · 0/18");
+  // The showcase walk's own distance never reaches the line.
+  assert.ok(!v0Line(p)?.includes("-0.07"));
+  assert.equal(v0Line({ ...p, v0_mean: null }), null);
   assert.equal(v0Line({ ...p, v0_walk: null }), null);
   assert.equal(v0Line({ ...p, v0_holdout: { passed: 0, runs: 0 } }), null);
   assert.equal(v0Line({ ...p, versions: [] }), null);
+  for (const bad of [null, { distance_m: Number.NaN, tasks: 18 }, { distance_m: -0.97, tasks: 0 }, { distance_m: -0.97, tasks: 1.5 }, { tasks: 18 }]) {
+    assert.equal(parsePinned({ ...raw, v0_mean: bad })?.v0_mean, null);
+  }
+  assert.equal(V0_WALK_LABEL, "one walk · showcase terrain");
 });
 
 test("the replay label reads the runs' own times and never says today", () => {

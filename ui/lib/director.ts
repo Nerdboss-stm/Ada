@@ -92,6 +92,8 @@ export type Pinned = {
   versions: VersionDoc[];
   /** v0's showcase run: what scene 1 plays. */
   v0_walk: { frames_id: string; distance_m: number; model_id: string | null } | null;
+  /** v0's train and holdout runs: mean distance over them, and how many distinct tasks they cover. */
+  v0_mean: { distance_m: number; tasks: number } | null;
   /** v0's holdout runs: how many succeeded, of how many. */
   v0_holdout: { passed: number; runs: number };
   /** The pinned scoreboard's rewrite cost, or null. */
@@ -138,6 +140,11 @@ export function parsePinned(raw: unknown): Pinned | null {
     w && framesId(w.frames_id) && typeof w.distance_m === "number" && Number.isFinite(w.distance_m)
       ? { frames_id: w.frames_id as string, distance_m: w.distance_m, model_id: str(w.model_id) }
       : null;
+  const m = d.v0_mean as Record<string, unknown> | null | undefined;
+  const v0Mean =
+    m && typeof m.distance_m === "number" && Number.isFinite(m.distance_m) && count(m.tasks) && m.tasks > 0
+      ? { distance_m: m.distance_m, tasks: m.tasks }
+      : null;
   const h = d.v0_holdout as Record<string, unknown> | undefined;
   const v0Holdout = h && count(h.passed) && count(h.runs) && h.passed <= h.runs ? { passed: h.passed, runs: h.runs } : { passed: 0, runs: 0 };
   const cost = d.rewrite_cost_usd;
@@ -148,6 +155,7 @@ export function parsePinned(raw: unknown): Pinned | null {
     snapshot,
     versions,
     v0_walk: v0Walk,
+    v0_mean: v0Mean,
     v0_holdout: v0Holdout,
     rewrite_cost_usd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     swap: parseSwap(d.swap),
@@ -190,16 +198,21 @@ export function pinnedFramesIds(p: Pinned): string[] {
   return [...new Set(ids.filter((x): x is string => typeof x === "string"))];
 }
 
+/** Scene 1's caption for the walk it plays, so the single showcase walk is never read as the mean. */
+export const V0_WALK_LABEL = "one walk · showcase terrain";
+
 /**
- * Scene 1's one line: "{v0 distance} m · {model} · ${cost} a gait · harness v0 · {passed}/{runs}".
- * Distance and model from v0's showcase run, cost from versions.metrics.cost_per_run_usd (the
- * spine's source), passed of the holdout runs counted. Null when any of them is missing.
+ * Scene 1's one line: "{v0 mean} m mean over {tasks} tasks · {model} · ${cost} a gait · harness v0 · {passed}/{runs}".
+ * Mean distance and task count from v0's train and holdout runs, model from its showcase run,
+ * cost from versions.metrics.cost_per_run_usd (the spine's source), passed of the holdout runs
+ * counted. Null when any of them is missing.
  */
 export function v0Line(p: Pinned): string | null {
   const v0 = pinnedVersion(p, p.snapshot.v0);
   const cost = formatUsd(v0?.metrics?.cost_per_run_usd);
-  if (!v0 || !p.v0_walk || !p.v0_walk.model_id || !cost || p.v0_holdout.runs === 0) return null;
-  return `${formatMeters(p.v0_walk.distance_m)} · ${p.v0_walk.model_id} · ${cost} a gait · harness ${v0._id} · ${p.v0_holdout.passed}/${p.v0_holdout.runs}`;
+  if (!v0 || !p.v0_mean || !p.v0_walk || !p.v0_walk.model_id || !cost || p.v0_holdout.runs === 0) return null;
+  const mean = `${formatMeters(p.v0_mean.distance_m)} mean over ${p.v0_mean.tasks} tasks`;
+  return `${mean} · ${p.v0_walk.model_id} · ${cost} a gait · harness ${v0._id} · ${p.v0_holdout.passed}/${p.v0_holdout.runs}`;
 }
 
 /** "Sep 26" in `timeZone` (the viewer's zone when omitted). */

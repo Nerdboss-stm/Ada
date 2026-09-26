@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cheatTimeline, isCheatDoc } from "@/lib/cheat";
 import { overTorqueJoint, type CheatCounter, type CheatSpine } from "@/lib/cheatcard";
-import { FINALE_CORNER, pinnedGhostSources, pinnedVersion, v0Line, type Pinned } from "@/lib/director";
+import { FINALE_CORNER, V0_WALK_LABEL, pinnedGhostSources, pinnedVersion, v0Line, type Pinned } from "@/lib/director";
 import { cycleSeconds } from "@/lib/ghosts";
 import type { EditDoc } from "@/lib/overlays";
 import type { Manifest } from "@/lib/replay";
@@ -85,7 +85,7 @@ function useBestSource(p: Pinned): { versionId: string; framesId: string }[] {
   return useMemo(() => pinnedGhostSources(p).filter((g) => g.versionId === p.snapshot.best_version), [p]);
 }
 
-/** Scene 1: v0 alone, walking its recorded showcase run, with one line read from the pin. */
+/** Scene 1: v0 alone, walking its recorded showcase run, captioned as one walk, with one line (its mean) read from the pin. */
 export function V0Scene({ pinned, manifest }: { pinned: Pinned; manifest: Manifest }) {
   const epoch = useRef<number | null>(null);
   const v0 = pinned.snapshot.v0;
@@ -105,9 +105,12 @@ export function V0Scene({ pinned, manifest }: { pinned: Pinned; manifest: Manife
           style={{ color: INK, textShadow: "0 2px 18px rgba(5,6,10,0.9)" }}
         >
           {line}
+          <span data-testid="v0-walk-label" className="mt-2 block text-[18px] font-medium tracking-wide text-[#9aa3b2] max-[800px]:text-[13px]">
+            {V0_WALK_LABEL}
+          </span>
         </p>
       ) : (
-        <Missing text="The pin has no recorded v0 showcase run with holdout runs" />
+        <Missing text="The pin has no recorded v0 showcase run with train and holdout runs" />
       )}
       <SceneError error={error} />
     </div>
