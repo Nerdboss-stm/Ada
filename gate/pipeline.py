@@ -92,7 +92,7 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
         stages[stage] = "pass"
         emit(stage, "pass", payload or {}, **ids)
 
-    reason = constraints.check(candidate, db_name)
+    reason = constraints.check(candidate, db_name, parent=parent)
     if reason is not None:
         tasks = verifier_stage.gate_tasks(db_name)
         par = verifier_stage.parent_score(parent, tasks, db_name)
@@ -136,7 +136,7 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
 
     # 4. constraints, checked again at the end
     emit(CONSTRAINTS, "start", {}, **ids)
-    reason = constraints.check(candidate, db_name)
+    reason = constraints.check(candidate, db_name, parent=parent)
     if reason is None:
         passed(CONSTRAINTS)
     else:

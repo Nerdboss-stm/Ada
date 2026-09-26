@@ -1,12 +1,13 @@
 """gate.constraints (SPEC §4 stage 4): pure checks on the candidate harness and the guardrails.
 
-    check(candidate, db_name) -> str | None     the first broken rule, or None
+    check(candidate, db_name, parent=None) -> str | None     the first broken rule, or None
 
 No model calls. The pipeline runs this silently before stage 1 and again as the
 gate.constraints cell. Order: guardrail documents verify against their content hash,
 the live sim/verifier.py and compress/ hashes match a guardrail document, tools are a
 subset of the stored whitelist, model_per_step uses only the cheap role agent_v0 (NOTES [A6], [A14]),
-engine keys and values sit inside loop.edits.ENGINE_BOUNDS, and no rule or context_policy
+engine keys and values sit inside loop.edits.ENGINE_BOUNDS, context_policy equals the
+parent's (the agent does not read it yet, NOTES [A16]), and no rule or context_policy
 entry states a literal gait value (loop.edits.states_gait_values, the controller's own check).
 """
 
@@ -20,6 +21,7 @@ from harness import guardrails
 from loop.edits import CHEAP_ROLES, ENGINE_BOUNDS, GAIT_VALUE_REASON, canon, states_gait_values
 
 CHEAP_TIER_REASON = "model outside the cheap tier"
+CONTEXT_POLICY_REASON = "context policy is not implemented"
 
 
 def _harness_text(candidate: Version) -> list[str]:
@@ -35,7 +37,7 @@ def _live_hashes() -> tuple[str, str | None]:
     return verifier, compressor
 
 
-def check(candidate: Version, db_name: str = ADA) -> str | None:
+def check(candidate: Version, db_name: str = ADA, parent: Version | None = None) -> str | None:
     try:
         docs = guardrails.load_guardrails(db_name)
     except guardrails.GuardrailError as e:
@@ -65,6 +67,9 @@ def check(candidate: Version, db_name: str = ADA) -> str | None:
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if not number or not math.isfinite(value) or not lo <= value <= hi:
             return f"engine.{key} = {value!r} outside [{lo}, {hi}]"
+
+    if parent is not None and canon(harness.context_policy) != canon(parent.harness.context_policy):
+        return CONTEXT_POLICY_REASON
 
     if any(states_gait_values(text) for text in _harness_text(candidate)):
         return GAIT_VALUE_REASON

@@ -30,6 +30,15 @@ def test_tool_outside_whitelist_rejects_at_constraints(world, adb):
     assert world.events()[-1][2]["reason"] == res["reason"]
 
 
+def test_changed_context_policy_rejects_at_constraints(world, adb):
+    """A16: the agent does not read context_policy, so a candidate may not change it."""
+    world.parent_runs(half(world.tasks))
+    res = world.gate(context_policy={"past_attempts": 2})
+    assert_precheck_reject(world, adb, res)
+    assert res["reason"] == "context policy is not implemented"
+    assert world.events()[-1][2]["reason"] == res["reason"]
+
+
 @pytest.mark.parametrize("role", ["frontier", "agent_v0.alt"])  # A14: agent_v0 is the only cheap role
 def test_non_cheap_model_rejects_at_constraints(world, adb, role):
     world.parent_runs(half(world.tasks))

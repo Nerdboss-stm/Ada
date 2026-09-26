@@ -164,8 +164,6 @@ def test_states_gait_values_allows(text):
 @pytest.mark.parametrize("over", [
     {"primitive": "rules", "op": "add", "path": "", "old": None, "new": "Use kp 5 on slopes."},
     {"primitive": "rules", "op": "set", "path": "", "old": "Keep the torso level.", "new": "Keep kd near 0.4."},
-    {"primitive": "context_policy", "op": "add", "path": "hint", "old": None, "new": {"frequency_hz": 1.5}},
-    {"primitive": "context_policy", "op": "add", "path": "amplitude", "old": None, "new": 0.8},
 ])
 def test_gait_values_in_added_text_rejected(over):
     with pytest.raises(ValidationError, match=GAIT_VALUE_REASON):
@@ -200,12 +198,6 @@ def test_list_primitive_path_is_normalized():
      lambda h: h.tools == ["read_task", "submit_gait", "preview_run"]),
     (dict(primitive="tools", op="remove", path="", old="read_task", new=None),
      lambda h: h.tools == ["submit_gait"]),
-    (dict(primitive="context_policy", op="add", path="history", old=None, new={"n": 3}),
-     lambda h: h.context_policy["history"] == {"n": 3}),
-    (dict(primitive="context_policy", op="set", path="past_attempts", old=2, new=4),
-     lambda h: h.context_policy["past_attempts"] == 4),
-    (dict(primitive="context_policy", op="remove", path="past_attempts", old=2, new=None),
-     lambda h: "past_attempts" not in h.context_policy),
     (dict(primitive="model_per_step", op="add", path="judge", old=None, new="agent_v0"),
      lambda h: h.model_per_step == {"agent": "agent_v0", "judge": "agent_v0"}),
     (dict(primitive="engine", op="set", path="max_attempts", old=3, new=5),
@@ -220,9 +212,8 @@ def test_apply_each_op(over, check):
     dict(primitive="rules", op="remove", path="", old="Not a rule.", new=None),
     dict(primitive="tools", op="add", path="", old=None, new="read_task"),
     dict(primitive="tools", op="set", path="", old="read_task", new="submit_gait"),
-    dict(primitive="context_policy", op="add", path="past_attempts", old=None, new=5),
-    dict(primitive="context_policy", op="remove", path="missing", old=None, new=None),
-    dict(primitive="context_policy", op="set", path="past_attempts", old=7, new=4),
+    dict(primitive="model_per_step", op="add", path="agent", old=None, new="agent_v0"),
+    dict(primitive="model_per_step", op="set", path="agent", old="agent_x", new="agent_v0"),
     dict(primitive="engine", op="set", path="max_attempts", old=5, new=4),
     dict(primitive="engine", op="set", path="temperature", old=0, new=0),
 ])
@@ -234,12 +225,12 @@ def test_apply_rejects_stale_or_noop(over):
 def test_apply_edit_is_pure():
     h = harness()
     before = copy.deepcopy(h.model_dump())
-    p = EditProposal.model_validate(prop(primitive="context_policy", op="set", path="telemetry",
-                                         old=["tilt"], new=["tilt", "rhythm"]))
+    p = EditProposal.model_validate(prop(primitive="rules", op="set", path="",
+                                         old="Keep the torso level.", new="Keep it low."))
     new_before = copy.deepcopy(p.new)
     out = apply_edit(h, p)
     assert h.model_dump() == before
-    assert out.context_policy["telemetry"] == ["tilt", "rhythm"]
+    assert out.rules == ["Keep it low."]
     out.context_policy["telemetry"].append("x")
     out.rules.append("y")
     out.engine["temperature"] = 1
@@ -257,12 +248,12 @@ def test_duplicates_invalid_stale_and_extras_dropped(fake):
         prop(primitive="rules", op="add", path="", old=None, new=long_rule),              # valid, large
         prop(primitive="tools", op="add", path="", old=None, new="preview_run"),          # valid
         prop(primitive="tools", op="add", path="", old=None, new="preview_run"),          # duplicate
-        prop(primitive="context_policy", op="set", path="past_attempts", old=2, new=3),   # valid
+        prop(primitive="model_per_step", op="add", path="judge", old=None, new="agent_v0"),  # valid
         prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="frontier"),  # invalid
         prop(primitive="engine", op="set", path="max_attempts", old=5, new=4),            # stale
         prop(primitive="rules", op="remove", path="", old="Keep the torso level.", new=None),  # valid
         prop(primitive="tools", op="add", path="", old=None, new="get_contact_log"),      # valid
-        prop(primitive="context_policy", op="add", path="history", old=None, new=["tilt"]),  # valid
+        prop(primitive="tools", op="add", path="", old=None, new="list_my_attempts"),     # valid
         prop(primitive="engine", op="set", path="max_attempts", old=3, new=4),            # valid
         prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),  # invalid: not cheap
         "not an edit",                                                                    # invalid
@@ -285,6 +276,21 @@ def test_duplicates_invalid_stale_and_extras_dropped(fake):
     assert ev["stage"] == "controller" and ev["status"] == "info"
     assert ev["payload"]["count"] == 6 and ev["payload"]["received"] == len(reply)
     assert ev["round_id"] == "r1" and ev["version_id"] == "v3"
+
+
+@pytest.mark.parametrize("over", [
+    dict(primitive="context_policy", op="set", path="past_attempts", old=2, new=3),
+    dict(primitive="context_policy", op="add", path="history", old=None, new=["tilt"]),
+    dict(primitive="context_policy", op="remove", path="past_attempts", old=2, new=None),
+])
+def test_context_policy_proposal_dropped(fake, over):
+    """A16: harness/agent.py does not read context_policy, so edits to it are dropped."""
+    with pytest.raises(ValidationError):
+        EditProposal.model_validate(prop(**over))
+    fake.reply = json.dumps({"edits": [prop(**over), prop()]})
+    out = controller.propose(head(), sensor(), [])
+    assert [p.primitive for p in out] == ["engine"]
+    assert fake.events[0]["payload"]["count"] == 1
 
 
 def test_bare_list_reply_accepted(fake):
@@ -345,6 +351,16 @@ def test_prompt_contents(fake):
     assert SPEED in text     # gate feedback goes in verbatim
     assert MOTORS in text
     assert '"verdict": "rejected"' in text
+
+
+def test_prompt_names_four_editable_parts(fake):
+    controller.propose(head(), sensor(), [])
+    text = prompt_text(fake)
+    section = text.split("## Harness primitives and how to edit them\n", 1)[1].split("\n## ", 1)[0]
+    bullets = [line[2:].split(":", 1)[0] for line in section.splitlines() if line.startswith("- ")]
+    assert bullets == ["rules", "tools", "model_per_step", "engine"]
+    assert "context_policy" not in section
+    assert '"primitive": "rules|tools|model_per_step|engine"' in text
 
 
 def test_assert_clean_catches_template_words():

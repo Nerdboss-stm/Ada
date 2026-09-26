@@ -53,11 +53,10 @@ TEMPLATE = """Objective, to maximize: {objective}
 ## Harness primitives and how to edit them
 - rules: list of strings added to the agent's system prompt. add `new`; remove `old`; set replaces `old` with `new`.
 - tools: list of tool names the agent may call, from the whitelist below only. add `new`; remove `old`; set replaces `old` with `new`.
-- context_policy: object; `path` is the key, the value is any JSON (how many past attempts, which telemetry).
 - model_per_step: object; `path` is the step name ("agent"); `new` must be one of {roles}. add or set only.
 - engine: object; set only; `path` is {engine}; temperature in [0, 1], max_attempts an integer in [1, 6].
 For every edit, `old` must equal the head's current value (null when adding). Each edit is tested alone against the head version.
-Rules and context_policy text must not state literal gait values (a gait field name next to a number); the agent chooses the numbers. Such edits are dropped.
+Rule text must not state literal gait values (a gait field name next to a number); the agent chooses the numbers. Such edits are dropped.
 
 ## Tool whitelist
 {tools}
@@ -70,7 +69,7 @@ Rules and context_policy text must not state literal gait values (a gait field n
 
 ## Reply
 A JSON object {{"edits": [...]}} with at most {max_edits} edits, smallest change first. Each edit:
-{{"primitive": "rules|context_policy|tools|model_per_step|engine", "op": "add|remove|set", "path": "", "old": null, "new": null,
+{{"primitive": "rules|tools|model_per_step|engine", "op": "add|remove|set", "path": "", "old": null, "new": null,
  "predicted_delta": <expected change in train reliability, -1 to 1>,
  "predicted_delta_m": <expected change in train mean distance in meters, a number; required>, "rationale": "<one sentence, at most {max_words} words>",
  "evidence_trace_ids": ["<trace ids from the sensor summary that motivate the edit>"]}}"""

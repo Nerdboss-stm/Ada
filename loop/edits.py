@@ -1,4 +1,4 @@
-"""Edit proposals (SPEC §5) and a pure apply_edit over the five harness primitives (SPEC §3).
+"""Edit proposals (SPEC §5) and a pure apply_edit over four of the harness primitives (SPEC §3).
 
     EditProposal   one edit: primitive, op, path, old, new, predicted_delta, predicted_delta_m,
                    rationale, evidence
@@ -8,9 +8,11 @@
 Semantics per primitive:
     rules, tools             lists; path is always "". add appends `new`, remove drops `old`,
                              set replaces the item equal to `old` with `new`.
-    context_policy,          dicts; path is the key. add needs the key absent, remove needs
-    model_per_step, engine   `old` to equal the current value, set upserts after checking that
+    model_per_step, engine   dicts; path is the key. add needs the key absent, remove needs
+                             `old` to equal the current value, set upserts after checking that
                              `old` equals the current value (None when the key is absent).
+context_policy is not editable: harness/agent.py does not read it yet (NOTES [A16]), so a
+proposal naming it fails validation.
 Static checks (no harness needed) live on the model; checks against the current harness raise
 EditError from apply_edit.
 """
@@ -40,7 +42,7 @@ ENGINE_BOUNDS: dict[str, tuple[int, int]] = {"temperature": (0, 1), "max_attempt
 LIST_PRIMITIVES = ("rules", "tools")
 MAX_RATIONALE_WORDS = 25
 
-Primitive = Literal["rules", "context_policy", "tools", "model_per_step", "engine"]
+Primitive = Literal["rules", "tools", "model_per_step", "engine"]
 Op = Literal["add", "remove", "set"]
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
@@ -134,12 +136,6 @@ class EditProposal(BaseModel):
                 raise ValueError(f"{self.primitive} {self.op} takes no {name}")
             if needed and self.primitive == "tools" and value not in TOOL_WHITELIST:
                 raise ValueError(f"tool {value!r} is not in the whitelist")
-
-    def _check_context_policy(self) -> None:
-        if self.op == "add" and self.old is not None:
-            raise ValueError("add takes no old")
-        if self.op == "remove" and self.new is not None:
-            raise ValueError("remove takes no new")
 
     def _check_model_per_step(self) -> None:
         if self.op == "remove":

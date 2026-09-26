@@ -59,6 +59,23 @@ def test_plain_harness_passes(adb, over):
     assert constraints.check(version("t-a10-c", **over), ADA_TEST) is None
 
 
+@pytest.mark.parametrize("parent_cp, cand_cp", [
+    ({}, {"past_attempts": 2}),
+    ({"past_attempts": 2}, {}),
+    ({"past_attempts": 2}, {"past_attempts": 3}),
+])
+def test_changed_context_policy_rejects(adb, parent_cp, cand_cp):
+    parent = version("t-a16-p", context_policy=parent_cp)
+    reason = constraints.check(version("t-a16-c", context_policy=cand_cp), ADA_TEST, parent=parent)
+    assert reason == constraints.CONTEXT_POLICY_REASON == "context policy is not implemented"
+
+
+def test_unchanged_context_policy_passes(adb):
+    cp = {"past_attempts": 2, "telemetry": ["tilt"]}
+    parent = version("t-a16-p", context_policy=cp)
+    assert constraints.check(version("t-a16-c", context_policy=dict(cp)), ADA_TEST, parent=parent) is None
+
+
 def test_gate_rejects_at_precheck_without_rolling(adb, monkeypatch):
     tag = uuid.uuid4().hex[:8]
     parent_id, cand_id, edit_id, round_id = (f"t-a10-{tag}-{s}" for s in "pcer")
