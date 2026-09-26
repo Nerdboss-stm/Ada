@@ -15,6 +15,8 @@ from sim.tasks import build_tasks
 
 COLLECTIONS = ("runs", "versions", "traces", "events", "checkpoints", "checkpoint_writes", "harness_guardrails")
 CALL_COST = 0.001
+OWN = {"version_id": "v0"}  # [B4] ada_test is shared: query only this file's documents
+OWN_TRACE = {"trace_id": {"$regex": "^v0-"}}
 
 
 def valid_gait() -> dict:
@@ -101,7 +103,7 @@ def test_valid_first_try_one_run_per_seed_and_v0(env):
     tasks = train_tasks()
     version = run(env, model, tasks=tasks)
 
-    runs = list(env.db.runs.find().sort([("task_id", 1), ("seed", 1)]))
+    runs = list(env.db.runs.find(OWN).sort([("task_id", 1), ("seed", 1)]))
     assert len(runs) == 4
     assert {(r["task_id"], r["seed"]) for r in runs} == {(t.id, s) for t in tasks for s in t.eval_seeds[:2]}
     assert [(e["task"], e["seed"]) for e in env.evaluated] == [(t.id, s) for t in tasks for s in t.eval_seeds[:2]]
@@ -133,7 +135,7 @@ def test_valid_first_try_one_run_per_seed_and_v0(env):
     assert "joints" in read["gait_schema"]["properties"]
     assert "eval_seeds" not in json.dumps(read)
 
-    events = list(env.db.events.find({"stage": "harness"}).sort("ts", 1))
+    events = list(env.db.events.find({**OWN, "stage": "harness"}).sort("ts", 1))
     assert [e["status"] for e in events] == ["start", "pass", "start", "pass"]
     assert env.db.checkpoints.count_documents({"thread_id": tid}) > 0
 
@@ -141,13 +143,13 @@ def test_valid_first_try_one_run_per_seed_and_v0(env):
 def test_invalid_then_valid_uses_two_attempts(env):
     run(env, scripted([invalid_gait(), valid_gait()]), tasks=train_tasks(1))
 
-    runs = list(env.db.runs.find())
+    runs = list(env.db.runs.find(OWN))
     assert len(runs) == 2 and all(r["success"] for r in runs)
     trace = env.db.traces.find_one({"trace_id": runs[0]["trace_id"]})
     submits = [s for s in trace["raw_steps"] if s.get("name") == "submit_gait"]
     assert [(s["attempt"], s["valid"]) for s in submits] == [(1, False), (2, True)]
     assert "frequency_hz" in json.loads(submits[0]["result"])["error"]
-    end = env.db.events.find_one({"stage": "harness", "status": "pass"})
+    end = env.db.events.find_one({**OWN, "stage": "harness", "status": "pass"})
     assert end["payload"]["attempts"] == 2
 
 
@@ -155,12 +157,12 @@ def test_max_attempts_exceeded_is_a_failed_run(env):
     model = scripted([invalid_gait()])
     run(env, model, tasks=train_tasks(1))
 
-    runs = list(env.db.runs.find())
+    runs = list(env.db.runs.find(OWN))
     assert len(runs) == 2
     assert all(not r["success"] and r["distance_m"] == 0.0 and r["gait"] == {} for r in runs)
     assert env.evaluated == []
     assert len(model.calls) == 1 + 3  # read_task, then 3 attempts
-    end = env.db.events.find_one({"stage": "harness", "status": "fail"})
+    end = env.db.events.find_one({**OWN, "stage": "harness", "status": "fail"})
     assert end["payload"]["attempts"] == 3 and end["payload"]["valid_gait"] is False
     assert env.db.versions.find_one({"_id": "v0"})["metrics"]["train_reliability"] == 0.0
 
@@ -172,7 +174,7 @@ def test_text_reply_without_tool_call_ends_episode(env):
                           cost_usd=0.0, cached=False)
 
     run(env, talker, tasks=train_tasks(1))
-    assert [r["success"] for r in env.db.runs.find()] == [False, False]
+    assert [r["success"] for r in env.db.runs.find(OWN)] == [False, False]
 
 
 def test_only_bound_tools_are_sent_and_run(env):
@@ -182,17 +184,17 @@ def test_only_bound_tools_are_sent_and_run(env):
     run(env, model, tasks=train_tasks(1), harness=harness)
 
     assert all(c["tools"] == ["submit_gait"] for c in model.calls)
-    trace = env.db.traces.find_one()
+    trace = env.db.traces.find_one(OWN_TRACE)
     first = trace["raw_steps"][1]
     assert first["name"] == "read_task" and "unknown tool" in json.loads(first["result"])["error"]
-    assert all(r["success"] for r in env.db.runs.find())
+    assert all(r["success"] for r in env.db.runs.find(OWN))
 
 
 def test_showcase_records_frames_through_sim_record(env):
     showcase = [t for t in build_tasks() if t.split == "showcase"]
     run(env, scripted([valid_gait()]), split="showcase", tasks=showcase)
 
-    runs = list(env.db.runs.find())
+    runs = list(env.db.runs.find(OWN))
     assert len(runs) == 1 and runs[0]["seed"] == showcase[0].eval_seeds[0]
     assert env.evaluated[0]["record"] is True
     assert len(env.written) == 1
@@ -205,5 +207,5 @@ def test_showcase_records_frames_through_sim_record(env):
 def test_rerun_replaces_runs_for_same_split(env):
     run(env, scripted([valid_gait()]), tasks=train_tasks(1))
     run(env, scripted([valid_gait()]), tasks=train_tasks(1))
-    assert env.db.runs.count_documents({}) == 2
+    assert env.db.runs.count_documents(OWN) == 2
     assert env.db.versions.find_one({"_id": "v0"})["metrics"]["n"] == 2

@@ -18,6 +18,8 @@ from sim.tasks import build_tasks
 
 COLLECTIONS = ("runs", "versions", "traces", "events", "checkpoints", "checkpoint_writes", "harness_guardrails")
 ALL_TOOLS = ["read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts"]
+OWN = {"version_id": "v1"}  # [B4] ada_test is shared: query only this file's documents
+OWN_TRACE = {"trace_id": {"$regex": "^v1-"}}
 PREVIEW_KEYS = {"ok", "seconds", "distance_m", "fell", "max_tilt_deg", "rhythm"}
 
 
@@ -81,7 +83,7 @@ def run(env, model, tools, tasks=None):
 
 def tool_results(env) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
-    for s in env.db.traces.find_one()["raw_steps"]:
+    for s in env.db.traces.find_one(OWN_TRACE)["raw_steps"]:
         if s["node"] == "tools":
             out.setdefault(s["name"], []).append(json.loads(s["result"]))
     return out
@@ -204,7 +206,7 @@ def test_tampered_guardrail_refuses_to_start(env, tamper):
     with pytest.raises(GuardrailError, match="does not match"):
         run(env, model, ALL_TOOLS)
     assert model.calls == [] and env.evaluated == []
-    assert env.db.runs.count_documents({}) == 0 and env.db.events.count_documents({}) == 0
+    assert env.db.runs.count_documents(OWN) == 0 and env.db.events.count_documents(OWN) == 0
 
 
 def test_missing_guardrails_refuse_to_start(env):
