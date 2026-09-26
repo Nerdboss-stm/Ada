@@ -48,7 +48,8 @@ def test_power_5_rejects_at_verifier_with_frames(world, adb):
                              "gate.meta": "pass", "gate.constraints": "pass"}
     assert [(s, st) for s, st, _ in world.events()] == [
         (s, st) for s in CARD_STAGES for st in ("start", "fail" if s == "gate.verifier" else "pass")]
-    assert world.episodes == [world.tasks[0].id]  # stops at the first violation
+    # all six episodes roll in parallel; runs stop at the first violation in task order
+    assert sorted(world.episodes) == sorted(t.id for t in world.tasks)
     assert res["train"]["n"] == 1
     frames = adb.frames.find_one({"_id": res["frames_id"]})
     assert (frames["kind"], frames["violation_frame"], frames["version_id"]) == \

@@ -8,7 +8,9 @@ The head is sensed, the controller proposes, and each proposal in order is re-ap
 current head (stale ones are skipped), given the next id v{N}, written to `edits` with verdict
 null, sent to gate.pipeline.run_gate (NOTES [A7]), then the child `versions` document is
 written and the edit gets its verdict (actual_delta null when the gate rolled nothing,
-train.n 0). An accepted child becomes the head and is scored on
+train.n 0), plus actual_delta_m (candidate minus parent train mean distance) and the
+candidate's attempt_frames_id (NOTES [A11]); the child's metrics keep the gate's
+train_mean_distance_m, which holdout scoring never overwrites. An accepted child becomes the head and is scored on
 holdout (k 3) with its showcase run recorded. No new proposal starts once the round's spend
 or time has reached its budget; the reason lands in the round document.
 """
@@ -146,7 +148,7 @@ def _score_accepted(child: Version, db_name: str) -> float:
 def _stale(p: EditProposal, head: Version, index: int, round_id: str, err: EditError,
            db_name: str) -> dict[str, Any]:
     decision = {"index": index, "decision": "stale", "edit_id": None, "version_id": None,
-                "reason": _clip(str(err)), "actual_delta": None}
+                "reason": _clip(str(err)), "actual_delta": None, "actual_delta_m": None}
     emit(STAGE, "info", {"event": "decision", "decision": "stale", "index": index,
                          "primitive": p.primitive, "op": p.op, "path": p.path,
                          "from_version": head.id, "reason": decision["reason"]},
@@ -180,7 +182,8 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
     train = result["train"]
     metrics = Metrics(train_reliability=train["reliability"], holdout_reliability_80=0.0,
                       mean_distance_m=train["mean_distance_m"],
-                      cost_per_run_usd=train["cost_per_run_usd"], n=train["n"])
+                      cost_per_run_usd=train["cost_per_run_usd"], n=train["n"],
+                      train_mean_distance_m=result.get("train_mean_distance_m"))
     child = Version.model_validate({**candidate.model_dump(by_alias=True), "status": verdict,
                                     "metrics": metrics.model_dump()})
     db(db_name).versions.insert_one(child.model_dump(by_alias=True))
@@ -188,9 +191,14 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
     # n == 0: rejected at the constraints pre-check, nothing rolled, so there is no delta
     actual = (round(train["reliability"] - result["parent_train_reliability"], 4)
               if train["n"] else None)
+    parent_m = result.get("parent_train_mean_distance_m")
+    actual_m = (round(train["mean_distance_m"] - parent_m, 4)
+                if train["n"] and parent_m is not None else None)
+    attempt_frames_id = result.get("attempt_frames_id")
     frames_id = result.get("frames_id")
     db(db_name).edits.update_one({"_id": edit.id}, {"$set": {
         "verdict": verdict, "reason": result.get("reason"), "actual_delta": actual,
+        "actual_delta_m": actual_m, "attempt_frames_id": attempt_frames_id,
         "frames_id": frames_id, "violation_frame": _violation_frame(frames_id, db_name),
     }})
     accepted = verdict == "accepted"
@@ -198,6 +206,7 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
         "event": "decision", "decision": verdict, "index": index, "from_version": head.id,
         "to_version": child_id, "reason": _clip(result.get("reason")), "actual_delta": actual,
         "predicted_delta": p.predicted_delta, "predicted_delta_m": p.predicted_delta_m,
+        "actual_delta_m": actual_m, "attempt_frames_id": attempt_frames_id,
         "frames_id": frames_id, "stages": result.get("stages"),
     }, round_id=round_id, version_id=child_id, edit_id=edit.id, db_name=db_name)
 
@@ -207,7 +216,7 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
         spend += _score_accepted(child, db_name)
         new_head = load_version(child_id, db_name)
     decision = {"index": index, "decision": verdict, "edit_id": edit.id, "version_id": child_id,
-                "reason": result.get("reason"), "actual_delta": actual}
+                "reason": result.get("reason"), "actual_delta": actual, "actual_delta_m": actual_m}
     return decision, new_head, spend
 
 

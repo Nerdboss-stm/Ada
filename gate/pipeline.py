@@ -3,7 +3,11 @@
     run_gate(parent, candidate, edit, round_id, db_name="ada") -> dict
         {verdict, reason, stages{gate.verifier, gate.gpa, gate.meta, gate.constraints},
          train{reliability, mean_distance_m, cost_per_run_usd, n},
-         parent_train_reliability, frames_id}
+         parent_train_reliability, frames_id,
+         attempt_frames_id, train_mean_distance_m, parent_train_mean_distance_m}
+
+attempt_frames_id, train_mean_distance_m and parent_train_mean_distance_m (NOTES [A11])
+come from the verifier stage; all three stay None when the pre-check short-circuits.
 
 A silent constraints pre-check runs first. If it fails, the first three cells are
 emitted as info {"skipped": true}, gate.constraints emits start then fail, and the
@@ -53,10 +57,14 @@ def _verifier_payload(res: dict[str, Any], edit: Edit) -> dict[str, Any]:
     par = res["parent"] or {}
     delta = (round(res["train"]["reliability"] - par["reliability"], 4)
              if par and res["train"]["n"] else None)
+    delta_m = (round(res["train"]["mean_distance_m"] - par["mean_distance_m"], 4)
+               if par and res["train"]["n"] else None)
     return {
         "reason": res["reason"], "train": res["train"],
         "parent": {k: par.get(k) for k in ("reliability", "mean_distance_m", "n")} if par else None,
         "predicted_delta": edit.predicted_delta, "actual_delta": delta,
+        "predicted_delta_m": edit.predicted_delta_m, "actual_delta_m": delta_m,
+        "gaits": res.get("gaits"), "attempt_frames_id": res.get("attempt_frames_id"),
         "frames_id": res["frames_id"], "violation_frame": res["violation_frame"],
     }
 
@@ -69,6 +77,8 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
         "verdict": "rejected", "reason": None, "stages": stages,
         "train": {"reliability": 0.0, "mean_distance_m": 0.0, "cost_per_run_usd": 0.0, "n": 0},
         "parent_train_reliability": 0.0, "frames_id": None,
+        "attempt_frames_id": None, "train_mean_distance_m": None,
+        "parent_train_mean_distance_m": None,
     }
 
     def fail(stage: str, reason: str, payload: dict[str, Any] | None = None) -> None:
@@ -98,6 +108,8 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
     out["train"] = {k: res["train"][k] for k in ("reliability", "mean_distance_m", "cost_per_run_usd", "n")}
     out["parent_train_reliability"] = res["parent"]["reliability"] if res["parent"] else 0.0
     out["frames_id"] = res["frames_id"]
+    for key in ("attempt_frames_id", "train_mean_distance_m", "parent_train_mean_distance_m"):
+        out[key] = res.get(key)
     payload = _verifier_payload(res, edit)
     if res["pass"]:
         passed(VERIFIER, payload)

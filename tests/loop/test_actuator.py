@@ -206,6 +206,27 @@ def test_precheck_reject_stores_null_delta(world, adb):
     assert decision["status"] == "fail" and decision["payload"]["actual_delta"] is None
 
 
+@pytest.mark.parametrize("verdict,train_m", [("accepted", 1.9), ("rejected", None)])
+def test_attempt_fields_land_on_edit_and_metrics(world, adb, verdict, train_m):
+    """NOTES [A11]: every gated candidate stores actual_delta_m and attempt_frames_id;
+    the child's metrics keep the gate's train_mean_distance_m (None: a task got no gait)."""
+    res = gate_result(verdict, rel=0.6, parent=0.5, reason=None if verdict == "accepted" else REASON)
+    res.update(attempt_frames_id="t-a11-attempt", train_mean_distance_m=train_m,
+               parent_train_mean_distance_m=1.5)
+    world.proposals = [P_TEMP]
+    world.results = [res]
+    r = actuator.run_round(world.head_id, db_name=ADA_TEST)
+
+    child = r["decisions"][0]["version_id"]
+    assert r["decisions"][0]["actual_delta_m"] == 0.4
+    e = adb.edits.find_one({"to_version": child})
+    assert (e["actual_delta_m"], e["attempt_frames_id"]) == (0.4, "t-a11-attempt")
+    v = Version.model_validate(adb.versions.find_one({"_id": child}))
+    assert v.metrics.train_mean_distance_m == train_m and v.metrics.mean_distance_m == 1.9
+    decision = actuator_events(adb, r["round_id"])[1]["payload"]
+    assert (decision["actual_delta_m"], decision["attempt_frames_id"]) == (0.4, "t-a11-attempt")
+
+
 def test_stale_proposal_is_skipped(world, adb):
     world.proposals = [P_TEMP, P_STALE, P_RULE]
     world.results = [gate_result(), gate_result(rel=0.65, parent=0.6)]

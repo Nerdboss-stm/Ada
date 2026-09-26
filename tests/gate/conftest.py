@@ -2,6 +2,7 @@
 LLM and stages 2-3 patched. The fake verifier's violation reason is `world.violation`;
 tests compare the gate's reason to it, never to a hard-coded verifier string."""
 
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -51,16 +52,21 @@ def world(monkeypatch, adb):
     class W:
         parent_id, cand_id = f"t-a8-{tag}-p", f"t-a8-{tag}-c"
         edit_id, round_id = f"t-a8-{tag}-e", f"t-a8-{tag}-r"
-        episodes: list[str] = []
+        episodes: list[str] = []  # task ids in completion order (episodes run in parallel)
+        no_gait: set[str] = set()  # candidate task ids whose episode submits nothing
+        delay: dict[str, float] = {}  # candidate task id -> seconds the episode takes
         llm_calls: list = []
         power = 1.0
         violation = "test double: sanity bound tripped"
         outcome: dict[str, tuple[bool, float]] = {}  # candidate task_id -> (success, distance)
 
         @classmethod
-        def parent_runs(cls, outcome):
+        def parent_runs(cls, outcome, gaits=None):
+            """gaits: parent task ids that carry a submitted gait; default every task."""
+            gaits = {t.id for t in tasks} if gaits is None else set(gaits)
             docs = [{"task_id": t.id, "seed": s, "split": "train", "version_id": cls.parent_id,
-                     "success": outcome[t.id][0], "distance_m": outcome[t.id][1]}
+                     "success": outcome[t.id][0], "distance_m": outcome[t.id][1],
+                     "gait": {"power": 1.0} if t.id in gaits else {}}
                     for t in tasks for s in t.eval_seeds[:verifier_stage.K]]
             adb.runs.insert_many(docs)
 
@@ -69,10 +75,15 @@ def world(monkeypatch, adb):
             return f"{cls.cand_id}-{task_id}"
 
         @classmethod
-        def gate(cls, **over):
+        def versions(cls, **over):
             parent = Version(_id=cls.parent_id, status="accepted", harness=harness(), created_at=NOW)
             cand = Version(_id=cls.cand_id, parent=cls.parent_id, status="candidate",
                            harness=harness(**over), created_at=NOW)
+            return parent, cand
+
+        @classmethod
+        def gate(cls, **over):
+            parent, cand = cls.versions(**over)
             edit = Edit(_id=cls.edit_id, round_id=cls.round_id, from_version=cls.parent_id,
                         to_version=cls.cand_id, origin="model", primitive="rules", op="add",
                         new="Keep the torso level.", predicted_delta=0.1, created_at=NOW)
@@ -86,8 +97,10 @@ def world(monkeypatch, adb):
     W.tasks = tasks
 
     def run_episode(task, version_id, h, *, db_name, **_):
+        time.sleep(W.delay.get(task.id, 0.0))
         W.episodes.append(task.id)
-        return agent.EpisodeResult(gait=gait(W.power), attempts=1, cost_usd=0.002, tokens=100,
+        g = None if task.id in W.no_gait else gait(W.power)
+        return agent.EpisodeResult(gait=g, attempts=1, cost_usd=0.002, tokens=100,
                                    model_id="test/agent", trace_id=f"{version_id}-{task.id}")
 
     def evaluate(g, task, seed, record=False):

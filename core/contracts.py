@@ -97,6 +97,8 @@ class Metrics(_Doc):
     mean_distance_m: float
     cost_per_run_usd: Usd
     n: int
+    # gate-subset train mean; None when a gate task had no gait. Holdout never writes it.
+    train_mean_distance_m: float | None = None
 
 
 class Version(_Doc):
@@ -137,6 +139,8 @@ class Edit(_Doc):
     predicted_delta: float | None = None
     predicted_delta_m: float | None = None  # supervisor's bet: change in train mean distance, meters
     actual_delta: float | None = None
+    actual_delta_m: float | None = None  # candidate minus parent train mean distance, meters
+    attempt_frames_id: str | None = None  # candidate on train-s0-f1, first eval seed (kind showcase)
     verdict: Verdict | None = None
     reason: str | None = None
     violation_frame: int | None = None
@@ -174,6 +178,8 @@ class Trace(_Doc):
     raw_steps: list[dict[str, Any]] = Field(default_factory=list)
     compressed_steps: list[dict[str, Any]] = Field(default_factory=list)
     schema_: Literal["gait-v1"] = Field(default="gait-v1", alias="schema")
+    end_reason: str | None = None  # submitted|attempts_exhausted|previews_exhausted|step_limit|no_tool_call
+    previews: int | None = None  # preview_run calls in the episode
 
 
 GeomPose = Annotated[list[float], Field(min_length=7, max_length=7)]  # x,y,z,qw,qx,qy,qz
