@@ -13,6 +13,7 @@ import {
   sharedFrameIndex,
   type Vec3,
 } from "@/lib/ghosts";
+import { WARM, glowIntensity, legForceIndex } from "@/lib/effects";
 import { formatMeters } from "@/lib/overlays";
 import { geomShape, poseParts, type Manifest } from "@/lib/replay";
 import type { Ghost } from "./useGhosts";
@@ -25,8 +26,8 @@ const LEADER_RENDER_ORDER = 10;
 
 export type Epoch = RefObject<number | null>;
 
-/** Seconds since the first ghost appeared; every ghost and the camera share it. */
-function playbackTime(epoch: Epoch, elapsed: number): number {
+/** Seconds since the first ghost appeared; every ghost, the camera, and the footprints share it. */
+export function playbackTime(epoch: Epoch, elapsed: number): number {
   if (epoch.current === null) epoch.current = elapsed;
   return elapsed - epoch.current;
 }
@@ -69,12 +70,25 @@ function makeMaterial(leader: boolean, color: string): THREE.Material {
   });
 }
 
+/**
+ * SPEC §6 "Joint glow": the leader's metal plus a warm emissive whose intensity is set each
+ * frame from the recorded force. Emissive above the bloom threshold is what blooms.
+ */
+function makeGlowMaterial(): THREE.MeshPhysicalMaterial {
+  const m = makeMaterial(true, ADA) as THREE.MeshPhysicalMaterial;
+  m.emissive = new THREE.Color(WARM);
+  m.emissiveIntensity = 0;
+  m.toneMapped = false;
+  return m;
+}
+
 /** One recorded run. Poses are raw MuJoCo z-up; the parent group does the only axis rotation. */
 function Body({
   ghost,
   geometries,
   color,
   leader,
+  forceIndex,
   cycle,
   epoch,
 }: {
@@ -82,20 +96,31 @@ function Body({
   geometries: THREE.BufferGeometry[];
   color: string;
   leader: boolean;
+  forceIndex: number[];
   cycle: number;
   epoch: Epoch;
 }) {
   const refs = useRef<(THREE.Mesh | null)[]>([]);
   const material = useMemo(() => makeMaterial(leader, color), [leader, color]);
   useEffect(() => () => material.dispose(), [material]);
+  // Leader only, never ghosts: one glow material per driven leg geom, null elsewhere.
+  const glow = useMemo(
+    () => geometries.map((_, k) => (leader && (forceIndex[k] ?? -1) >= 0 ? makeGlowMaterial() : null)),
+    [geometries, leader, forceIndex],
+  );
+  useEffect(() => () => glow.forEach((m) => m?.dispose()), [glow]);
 
   useFrame(({ clock }) => {
     const { doc } = ghost;
     const i = sharedFrameIndex(playbackTime(epoch, clock.elapsedTime), doc.fps, doc.frames.length, cycle);
-    const geoms = doc.frames[i]?.geoms ?? [];
+    const frame = doc.frames[i];
+    const geoms = frame?.geoms ?? [];
     for (let g = 0; g < geoms.length; g++) {
       const mesh = refs.current[g];
       if (!mesh) continue;
+      if (leader && forceIndex[g] >= 0) {
+        (mesh.material as THREE.MeshPhysicalMaterial).emissiveIntensity = glowIntensity(frame.forces[forceIndex[g]]);
+      }
       const { pos, quat } = poseParts(geoms[g]);
       mesh.position.set(pos[0], pos[1], pos[2]);
       mesh.quaternion.set(quat[0], quat[1], quat[2], quat[3]);
@@ -109,7 +134,7 @@ function Body({
           key={k}
           ref={(el) => void (refs.current[k] = el)}
           geometry={geometry}
-          material={material}
+          material={glow[k] ?? material}
           castShadow={leader}
           receiveShadow={leader}
           renderOrder={leader ? LEADER_RENDER_ORDER : 0}
@@ -157,6 +182,7 @@ export function GhostBodies({
   epoch: Epoch;
 }) {
   const geometries = useGeometries(manifest);
+  const forceIndex = useMemo(() => legForceIndex(manifest), [manifest]);
   const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
   // Oldest first; the leader is drawn last.
   const ordered = [...ghosts.filter((g) => g.key !== leader), ...ghosts.filter((g) => g.key === leader)];
@@ -170,6 +196,7 @@ export function GhostBodies({
           geometries={geometries}
           color={colorOf.get(g.key) ?? ADA}
           leader={g.key === leader}
+          forceIndex={forceIndex}
           cycle={cycle}
           epoch={epoch}
         />

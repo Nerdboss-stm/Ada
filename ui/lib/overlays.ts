@@ -111,6 +111,7 @@ export function formatMeters(x: number): string {
 // Displayed precision. The claim is judged on these integers, never on the raw floats.
 const RELIABILITY_SCALE = 100; // whole percent
 const COST_SCALE = 10_000; // USD to 4 places
+const MIN_CLAIM_K = 1.5; // compared on the one-decimal k as displayed
 
 export type Row = {
   versionId: string;
@@ -160,7 +161,7 @@ export function pickBest(versions: VersionDoc[]): VersionDoc | null {
 /**
  * SPEC §0 on the displayed rounded values: best reliability ≥ frontier's, best cost < frontier's,
  * both with n > 0. Returns the cost ratio k as displayed (floored to one decimal so it never
- * overstates), or null when the claim is not earned. A best cost that displays as $0.0000 earns
+ * overstates), or null when the claim is not earned, including a displayed k below 1.5. A best cost that displays as $0.0000 earns
  * nothing: the ratio would be unbounded.
  */
 export function claimK(frontier: Row | null, best: Row | null): string | null {
@@ -169,6 +170,8 @@ export function claimK(frontier: Row | null, best: Row | null): string | null {
   if (best.reliabilityPct < frontier.reliabilityPct) return null;
   if (best.costUnits <= 0 || best.costUnits >= frontier.costUnits) return null;
   const k = Math.floor((frontier.costUnits / best.costUnits) * 10) / 10;
+  // Never "1.0× lower cost": the displayed k itself must be at least MIN_CLAIM_K.
+  if (k < MIN_CLAIM_K) return null;
   return k.toFixed(1);
 }
 

@@ -141,6 +141,13 @@ test("claim holds only on displayed values (SPEC §0)", () => {
   assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.00004))), null);
   // k from the rounded costs, floored to one decimal: 0.0100 / 0.0030 = 3.33 -> 3.3.
   assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.00296))), "3.3");
+  // Displayed k must be at least 1.5: 0.0100 / 0.0099 = 1.01 -> "1.0", 0.0100 / 0.0070 = 1.43 -> "1.4".
+  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0099))), null);
+  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0070))), null);
+  // 0.0100 / 0.0066 = 1.515 -> "1.5": exactly at the bar, earned.
+  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0066))), "1.5");
+  // 0.0100 / 0.0067 = 1.4925 would round to 1.5 but floors to 1.4: not earned.
+  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0067))), null);
   // n must be printed and positive.
   assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.001, 0))), null);
   assert.equal(claimK(null, toRow(ver("v1", "accepted", 0.95, 0.001))), null);

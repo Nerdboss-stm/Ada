@@ -3,8 +3,12 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Lightformer, OrbitControls, Text } from "@react-three/drei";
+import { Bloom, EffectComposer, ToneMapping } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
+import { cycleSeconds } from "@/lib/ghosts";
 import type { Manifest } from "@/lib/replay";
+import { Footprints } from "./Footprints";
 import { ADA, GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
 import Overlays from "./Overlays";
 import { useAdaStream } from "./useAdaStream";
@@ -19,6 +23,10 @@ const METER_LINE = "#1b2130";
 const METER_TEXT = "#7fb7ff";
 // Plex Sans Medium for drei Text (troika cannot read next/font's woff2 subsets). Local: no CDN on stage.
 const PLEX_WOFF = "/fonts/ibm-plex-sans-500.woff";
+
+// Linear HDR luminance a pixel needs to bloom: above the metal's brightest reflected highlight,
+// below the footprints and a pushing leg's glow (lib/effects.ts, Footprints.tsx).
+const BLOOM_THRESHOLD = 1.4;
 
 const METERS_FROM = -5;
 const METERS_TO = 40;
@@ -71,6 +79,20 @@ function Reflections() {
       <Lightformer form="rect" color={RIM} intensity={2} scale={[8, 1.5]} position={[-5, 2.5, -6]} target={[0, 0, 0]} />
       <Lightformer form="rect" color={ADA} intensity={0.35} scale={[20, 20]} position={[0, 10, 0]} rotation={[Math.PI / 2, 0, 0]} />
     </Environment>
+  );
+}
+
+/**
+ * The composer renders the scene into a HalfFloat target (three applies no tone mapping there)
+ * and sets gl.toneMapping to NoToneMapping, so ACES Filmic is applied exactly once, here, after
+ * Bloom has added onto the linear HDR image.
+ */
+function Post() {
+  return (
+    <EffectComposer>
+      <Bloom mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.3} intensity={1.1} />
+      <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+    </EffectComposer>
   );
 }
 
@@ -131,6 +153,7 @@ export default function Stage() {
     [loaded, manifest],
   );
   const leaderGhost = ghosts.find((g) => g.key === leader);
+  const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
   const mismatched = manifest ? loaded.length - ghosts.length : 0;
   const error =
     loadError ?? ghostError ?? stream.error ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
@@ -140,7 +163,8 @@ export default function Stage() {
       <Canvas
         shadows="percentage"
         dpr={[1, 2]}
-        gl={{ toneMapping: THREE.ACESFilmicToneMapping, antialias: true }}
+        // ACES comes from the ToneMapping effect in <Post>, never from the renderer.
+        gl={{ toneMapping: THREE.NoToneMapping, antialias: true }}
         camera={{ position: [1.2, 2.4, 6.5], fov: 40, near: 0.1, far: 200 }}
       >
         <color attach="background" args={[BG]} />
@@ -153,6 +177,7 @@ export default function Stage() {
             <Floor />
           </Suspense>
           {manifest && <GhostBodies manifest={manifest} ghosts={ghosts} leader={leader} epoch={epoch} />}
+          {manifest && leaderGhost && <Footprints ghost={leaderGhost} manifest={manifest} cycle={cycle} epoch={epoch} />}
         </group>
         {orbit ? (
           <OrbitControls makeDefault target={[1.2, 0.4, -1.5]} enableDamping />
@@ -160,6 +185,7 @@ export default function Stage() {
           <GhostCamera ghosts={ghosts} leader={leader} epoch={epoch} />
         )}
         <LeaderReadout ghosts={ghosts} leader={leader} epoch={epoch} onText={showDistance} />
+        <Post />
       </Canvas>
       <Overlays
         leaderVersion={leaderGhost?.doc.version_id ?? null}
