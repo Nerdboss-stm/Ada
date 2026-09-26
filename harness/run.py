@@ -10,8 +10,8 @@ from that split's runs. Showcase records frames through sim.record.write_frames
 (kind "showcase", or "frontier" for the frontier baseline) and sets showcase_frames_id.
 
 Holdout (and the swap, which runs the holdout split) scores mean_distance_m exactly like the
-gate's score() (NOTES [B13]): a physics-violating run (sanity.pass false) or a run with no gait
-counts as -target_m, the target walked backward. Train keeps the raw mean; the gate re-scores
+gate's score() (NOTES [B13], B14): a physics-violating run (sanity.pass false) or a run with no
+gait counts as min(distance_m, -target_m), at least the target walked backward. Train keeps the raw mean; the gate re-scores
 train runs itself.
 
 Holdout runs its per-task episodes in parallel (HOLDOUT_WORKERS threads); results keep task order.
@@ -60,8 +60,10 @@ def penalized(run: dict[str, Any]) -> bool:
 
 
 def scored_distance(run: dict[str, Any]) -> float:
-    """The run's distance, or -target_m when penalized; the run dict carries its task's target_m."""
-    return -float(run["target_m"]) if penalized(run) else float(run["distance_m"])
+    """The run's distance, or min(distance_m, -target_m) when penalized (B14), so a failure can
+    only lower a score; the run dict carries its task's target_m."""
+    distance = float(run["distance_m"])
+    return min(distance, -float(run["target_m"])) if penalized(run) else distance
 
 
 def mean_distance_m(runs: list[dict[str, Any]]) -> float:

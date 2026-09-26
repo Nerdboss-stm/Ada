@@ -73,9 +73,10 @@ def failed(run: dict[str, Any]) -> bool:
 
 
 def scored_distance(run: dict[str, Any]) -> float:
-    """The run's distance, or -target_m (the target walked backward) when it violated physics
-    or submitted no gait."""
-    return -float(run["target_m"]) if failed(run) else float(run["distance_m"])
+    """The run's distance, or min(distance_m, -target_m) when it violated physics or submitted
+    no gait (B14): at least the target walked backward, so a failure can only lower a score."""
+    distance = float(run["distance_m"])
+    return min(distance, -float(run["target_m"])) if failed(run) else distance
 
 
 def score(runs_by_task: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:

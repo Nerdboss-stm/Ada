@@ -140,7 +140,8 @@ def test_swap_document_fields_runs_and_frames(world):
 
 
 def test_swap_violations_per_side_and_penalized_means(world, monkeypatch):
-    """[B13] a physics-violating run counts on its side and as -target_m in that side's mean."""
+    """[B13, B14] a physics-violating run counts on its side and as min(distance_m, -target_m)
+    in that side's mean."""
     left, right = world.version("l"), world.version("r")
     real = HR._evaluate
     bad = HOLDOUT[1]  # not the recorded task, so the showcase re-record still reproduces
@@ -160,7 +161,8 @@ def test_swap_violations_per_side_and_penalized_means(world, monkeypatch):
         runs = list(world.db.runs.find({"version_id": vid, "split": "swap"}))
         assert CS.violations(runs) == 1
         targets = {t.id: t.target_m for t in HOLDOUT}
-        scored = [-targets[r["task_id"]] if not r["sanity"]["pass"] else r["distance_m"] for r in runs]
+        scored = [min(r["distance_m"], -targets[r["task_id"]]) if not r["sanity"]["pass"] else r["distance_m"]
+                  for r in runs]
         assert mean_m == round(sum(scored) / len(scored), 4)
 
 

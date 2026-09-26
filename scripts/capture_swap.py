@@ -15,7 +15,8 @@
    the two harness documents; a model line first when the models differ), verifier_sha,
    mujoco_version, manifest_version read from the live code, and model_calls /
    fresh_calls read from the swap traces. The mean distances come from run_split's holdout
-   scoring (a physics-violating or gait-less run counts as -target_m, as in the gate), and
+   scoring (a physics-violating or gait-less run counts as min(distance_m, -target_m), as in
+   the gate), and
    left_violations / right_violations count each side's physics-violating runs [B13].
 """
 

@@ -26,6 +26,7 @@ CASES = {
     "mixed": {"a": [run(9.0, 3.0, ok=False), run(0.0, 3.0, gait={})],
               "b": [run(0.0, 4.0, gait={}), run(4.1, 4.0, success=True)],
               "c": [run(-0.3, 2.5), run(7.0, 2.5, ok=False)]},
+    "violation_backward": {"a": [run(-3.0, 2.0, ok=False), run(1.0, 2.0)]},
     "empty": {},
 }
 
@@ -40,3 +41,9 @@ def test_mean_distance_matches_gate_score(name):
 def test_penalized_runs_walk_the_target_backward():
     assert mean_distance_m(CASES["violation"]["a"]) == pytest.approx((-3.0 + 2.0) / 2)
     assert mean_distance_m(CASES["no_gait"]["a"]) == pytest.approx(-3.0)
+
+
+def test_a_violation_that_walked_backward_keeps_its_distance():
+    """B14: min(distance_m, -target_m), so a failure can only lower a score."""
+    backward = {"a": [run(-3.0, 2.0, ok=False)]}
+    assert mean_distance_m(backward["a"]) == score(backward)["mean_distance_m"] == -3.0
