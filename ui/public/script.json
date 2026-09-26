@@ -1,7 +1,7 @@
 {
-  "1": "[placeholder] Scene 1: harness v0, the starting point.",
-  "3": "[placeholder] Scene 3: the harness bets on its own edits.",
-  "4": "[placeholder] Scene 4: the edit the physics check caught.",
-  "5": "[placeholder] Scene 5: same model, same task, two harnesses.",
-  "7": "[placeholder] Scene 7: every version, live from the change stream."
+  "1": "Ada's gait is written by a model that costs a twentieth of a cent. On her starting harness, she fails every task.",
+  "3": "Before each attempt, the harness writes down a lesson and bets on the result. Lost bets are thrown out. Won bets are kept.",
+  "4": "Paid for distance, she reached for motors stronger than she has. Physics rejected it every time.",
+  "5": "Same model, terrains the loop never saw. Left: the harness she started with. Right: the one she wrote herself.",
+  "7": "Every lesson, bet, cheat and verdict is a document in MongoDB Atlas, streamed live to this page."
 }
