@@ -1,21 +1,22 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Lightformer, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
-import { frameIndexAt, geomShape, poseParts, type FramesDoc, type Manifest } from "@/lib/replay";
+import type { Manifest } from "@/lib/replay";
+import { ADA, GhostBodies, GhostCamera } from "./Ghosts";
+import { useGhosts } from "./useGhosts";
 
 // SPEC §6 "Scene".
 const BG = "#05060a";
 const FLOOR = "#0b0d12";
 const KEY = "#ffd9a8";
 const RIM = "#7fb7ff";
-const ADA = "#c9ced6";
 const METER_LINE = "#1b2130";
 const METER_TEXT = "#7fb7ff";
-// Plex for drei Text (troika cannot read next/font's woff2 subsets).
-const PLEX_WOFF = "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/files/ibm-plex-sans-latin-500-normal.woff";
+// Plex Sans Medium for drei Text (troika cannot read next/font's woff2 subsets). Local: no CDN on stage.
+const PLEX_WOFF = "/fonts/ibm-plex-sans-500.woff";
 
 const METERS_FROM = -5;
 const METERS_TO = 40;
@@ -60,48 +61,6 @@ function Floor() {
   );
 }
 
-function Ada({ manifest, doc }: { manifest: Manifest; doc: FramesDoc }) {
-  const refs = useRef<(THREE.Group | null)[]>([]);
-  const clock = useRef(0);
-  const shown = useRef(-1);
-
-  useFrame((_, delta) => {
-    clock.current += delta;
-    const i = frameIndexAt(clock.current, doc.fps, doc.frames.length);
-    if (i === shown.current) return;
-    shown.current = i;
-    const geoms = doc.frames[i].geoms;
-    for (let g = 0; g < geoms.length; g++) {
-      const obj = refs.current[g];
-      if (!obj) continue;
-      const { pos, quat } = poseParts(geoms[g]);
-      obj.position.set(pos[0], pos[1], pos[2]);
-      obj.quaternion.set(quat[0], quat[1], quat[2], quat[3]);
-    }
-  });
-
-  return (
-    <group>
-      {manifest.geoms.map((g, k) => {
-        const shape = geomShape(g);
-        return (
-          <group key={g.id} ref={(el) => void (refs.current[k] = el)}>
-            {/* three's capsule runs along +Y; MuJoCo's along local +Z. */}
-            <mesh castShadow receiveShadow rotation={shape.kind === "capsule" ? [Math.PI / 2, 0, 0] : [0, 0, 0]}>
-              {shape.kind === "sphere" ? (
-                <sphereGeometry args={[shape.radius, 48, 32]} />
-              ) : (
-                <capsuleGeometry args={[shape.radius, shape.length, 12, 24]} />
-              )}
-              <meshPhysicalMaterial color={ADA} metalness={0.9} roughness={0.25} clearcoat={1} />
-            </mesh>
-          </group>
-        );
-      })}
-    </group>
-  );
-}
-
 // Reflections for the metal: key and rim softboxes rendered once into a cube map (no HDR fetch).
 function Reflections() {
   return (
@@ -137,28 +96,35 @@ function Lights() {
   );
 }
 
-export default function Stage({ framesUrl = "/fixtures/wiggle.json" }: { framesUrl?: string }) {
+export default function Stage() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
-  const [doc, setDoc] = useState<FramesDoc | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const { ghosts: loaded, leader, error: ghostError } = useGhosts();
+  const epoch = useRef<number | null>(null);
+  const orbit = useMemo(() => new URLSearchParams(window.location.search).has("orbit"), []);
 
   useEffect(() => {
     let live = true;
-    Promise.all([fetch("/manifest.json"), fetch(framesUrl)])
-      .then(async ([m, f]) => {
-        if (!m.ok || !f.ok) throw new Error(`load failed: manifest ${m.status}, frames ${f.status}`);
-        const [mj, fj] = (await Promise.all([m.json(), f.json()])) as [Manifest, FramesDoc];
-        if (fj.manifest_version !== mj.manifest_version) throw new Error("frames manifest_version does not match manifest");
-        if (live) {
-          setManifest(mj);
-          setDoc(fj);
-        }
+    fetch("/manifest.json")
+      .then(async (m) => {
+        if (!m.ok) throw new Error(`load failed: manifest ${m.status}`);
+        const mj = (await m.json()) as Manifest;
+        if (live) setManifest(mj);
       })
-      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => live && setLoadError(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [framesUrl]);
+  }, []);
+
+  // A frames doc recorded against another manifest cannot be posed; leave it out and say so.
+  const ghosts = useMemo(
+    () => (manifest ? loaded.filter((g) => g.doc.manifest_version === manifest.manifest_version) : []),
+    [loaded, manifest],
+  );
+  const mismatched = manifest ? loaded.length - ghosts.length : 0;
+  const error =
+    loadError ?? ghostError ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
 
   return (
     <div className="relative h-dvh w-full" style={{ background: BG }}>
@@ -177,10 +143,19 @@ export default function Stage({ framesUrl = "/fixtures/wiggle.json" }: { framesU
           <Suspense fallback={null}>
             <Floor />
           </Suspense>
-          {manifest && doc && <Ada manifest={manifest} doc={doc} />}
+          {manifest && <GhostBodies manifest={manifest} ghosts={ghosts} leader={leader} epoch={epoch} />}
         </group>
-        <OrbitControls makeDefault target={[1.2, 0.4, -1.5]} enableDamping />
+        {orbit ? (
+          <OrbitControls makeDefault target={[1.2, 0.4, -1.5]} enableDamping />
+        ) : (
+          <GhostCamera ghosts={ghosts} leader={leader} epoch={epoch} />
+        )}
       </Canvas>
+      {ghosts.length === 0 && !error && (
+        <p className="pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-lg font-medium tracking-wide text-[#7fb7ff]/80">
+          Waiting for Ada&rsquo;s first recorded run
+        </p>
+      )}
       {error && <p className="absolute left-4 top-4 text-sm text-red-400">{error}</p>}
     </div>
   );
