@@ -176,6 +176,7 @@ class FramesDoc(_Doc):
     fps: float
     frames: list[Frame]
     sha256: str
+    violation_frame: int | None = None
 
 
 class Skill(_Doc):
