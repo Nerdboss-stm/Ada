@@ -1,0 +1,10 @@
+{
+  "agent_v0":   {"id": "openai/gpt-6-luna",         "family": "openai",    "usd_per_mtok_in": 0.10, "usd_per_mtok_out": 0.50,  "temperature": 0,
+                 "alt": {"id": "openai/gpt-oss-20b", "family": "openai", "usd_per_mtok_in": 0.02, "usd_per_mtok_out": 0.09}},
+  "frontier":   {"id": "openai/gpt-6-sol-pro",      "family": "openai",    "usd_per_mtok_in": 2.00, "usd_per_mtok_out": 10.00, "temperature": 0,
+                 "alt": {"id": "anthropic/claude-sonnet-5", "family": "anthropic", "usd_per_mtok_in": 2.00, "usd_per_mtok_out": 10.00}},
+  "controller": {"id": "anthropic/claude-sonnet-5", "family": "anthropic", "usd_per_mtok_in": 2.00, "usd_per_mtok_out": 10.00, "temperature": null,
+                 "alt": {"id": "openai/gpt-6-sol-pro", "family": "openai", "usd_per_mtok_in": 2.00, "usd_per_mtok_out": 10.00}},
+  "judge":      {"id": "google/gemini-3.8-flash",   "family": "google",    "usd_per_mtok_in": 0.75, "usd_per_mtok_out": 3.75,  "temperature": 0,
+                 "alt": {"id": "google/gemini-3.5-flash", "family": "google", "usd_per_mtok_in": 1.50, "usd_per_mtok_out": 9.00}}
+}

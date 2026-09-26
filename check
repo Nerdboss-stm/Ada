@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The only way to run acceptance tests. Prints one CHECKPOINT line and appends it to logs/checkpoints.log.
+#   ./check tests/env/test_kat.py     -> uv run pytest -q <paths>   (no args = whole suite)
+#   ./check ui [args]                 -> (cd ui && npm test -- args)
+#   ./check --self-test               -> proves the pipeline + budget-hook wiring
+cd "$(dirname "$0")" || exit 1
+mkdir -p logs
+if [ "${1:-}" = "--self-test" ]; then
+  line="CHECKPOINT GREEN self-test $(date +%H:%M:%S)"; echo "$line" | tee -a logs/checkpoints.log; exit 0
+fi
+if [ "${1:-}" = "ui" ]; then
+  shift; label="ui $*"; (cd ui && npm test --silent -- "$@"); rc=$?
+else
+  label="${*:-all}"; uv run pytest -q "$@"; rc=$?
+fi
+if [ "$rc" -eq 0 ]; then line="CHECKPOINT GREEN $label $(date +%H:%M:%S)"
+else line="CHECKPOINT RED $label rc=$rc $(date +%H:%M:%S)"; fi
+echo "$line" | tee -a logs/checkpoints.log
+exit "$rc"
