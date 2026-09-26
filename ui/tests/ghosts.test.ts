@@ -44,8 +44,8 @@ test("ghost sources are versions with showcase_frames_id, oldest first", () => {
   ]);
 });
 
-test("leader is reliability-first among accepted or baseline, distance breaks ties", () => {
-  const m = (r: number | null, d: number) => ({ holdout_reliability_80: r, mean_distance_m: d });
+test("leader is train-reliability-first among accepted or baseline, distance breaks ties", () => {
+  const m = (r: number | null, d: number) => ({ train_reliability: r, mean_distance_m: d });
   const vs: VersionDoc[] = [
     { _id: "v0", status: "baseline", metrics: m(0.4, 1.2) },
     { _id: "v1", status: "rejected", metrics: m(1.0, 9.9) },
@@ -58,9 +58,19 @@ test("leader is reliability-first among accepted or baseline, distance breaks ti
   // Tie on reliability: farther wins; full tie: oldest keeps it.
   assert.equal(pickLeader([...vs, { _id: "v6", status: "accepted", metrics: m(0.8, 3.5) }]), "v6");
   assert.equal(pickLeader([...vs, { _id: "v7", status: "accepted", metrics: m(0.8, 3.4) }]), "v3");
-  // No holdout reliability: not eligible.
+  // No train reliability: not eligible.
   assert.equal(pickLeader([{ _id: "v8", status: "accepted", metrics: m(null, 30) }]), null);
   assert.equal(pickLeader([{ _id: "v1", status: "rejected", metrics: m(1, 5) }]), null);
+});
+
+test("leader never looks at holdout: holdout is evidence only", () => {
+  const vs: VersionDoc[] = [
+    { _id: "v1", status: "accepted", metrics: { train_reliability: 0.9, holdout_reliability_80: 0.1, mean_distance_m: 2 } },
+    { _id: "v2", status: "accepted", metrics: { train_reliability: 0.5, holdout_reliability_80: 1.0, mean_distance_m: 2 } },
+  ];
+  assert.equal(pickLeader(vs), "v1");
+  // Holdout alone does not make a version eligible.
+  assert.equal(pickLeader([{ _id: "v3", status: "accepted", metrics: { holdout_reliability_80: 1, mean_distance_m: 9 } }]), null);
 });
 
 const doc = (xs: number[], fps = 10, kind: FramesDoc["kind"] = "showcase"): FramesDoc => ({

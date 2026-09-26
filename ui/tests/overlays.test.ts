@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   GATE_STAGES,
-  claimK,
+  HOLDOUT_TASKS,
+  claim,
   claimLine,
   formatDelta,
   formatMeters,
@@ -99,22 +100,24 @@ test("deltas and meters format for the screen", () => {
   assert.equal(formatMeters(3.456), "3.46 m");
 });
 
-const ver = (_id: string, status: string, r: number, c: number, n = 30, d = 1): VersionDoc => ({
+// r is both train and holdout reliability unless `train` is given: the leader reads train only.
+const ver = (_id: string, status: string, r: number, c: number, n = 30, d = 1, train = r): VersionDoc => ({
   _id,
   status,
-  metrics: { holdout_reliability_80: r, cost_per_run_usd: c, n, mean_distance_m: d },
+  metrics: { train_reliability: train, holdout_reliability_80: r, cost_per_run_usd: c, n, mean_distance_m: d },
 });
 
-test("rows show whole-percent reliability, n, and 4-place cost", () => {
+test("rows show whole-percent reliability, terrains passed of 6, n, and 4-place cost", () => {
   const row = toRow(ver("v3", "accepted", 0.834, 0.00123, 30));
   assert.deepEqual(
-    row && { r: row.reliability, c: row.cost, n: row.n },
-    { r: "83%", c: "$0.0012", n: 30 },
+    row && { r: row.reliability, t: row.tasksPassed, c: row.cost, n: row.n },
+    { r: "83%", t: 5, c: "$0.0012", n: 30 },
   );
+  assert.equal(HOLDOUT_TASKS, 6);
   assert.equal(toRow({ _id: "v4", status: "accepted", metrics: null }), null);
 });
 
-test("best is the reliability-first leader; frontier is the frozen version", () => {
+test("best is the train-reliability-first leader; frontier is the frozen version", () => {
   const vs = [
     ver("v0", "baseline", 0.5, 0.001),
     ver("v1", "accepted", 0.9, 0.001, 30, 2),
@@ -124,32 +127,60 @@ test("best is the reliability-first leader; frontier is the frozen version", () 
   assert.equal(pickBest(vs)?._id, "v1");
   assert.equal(pickFrontier(vs)?._id, "vF");
   assert.equal(pickBest([ver("vF", "frontier", 1, 0.001)]), null);
+  // Better holdout does not make a version best.
+  assert.equal(pickBest([ver("v1", "accepted", 0.2, 0.001, 30, 1, 0.9), ver("v2", "accepted", 1, 0.001, 30, 1, 0.5)])?._id, "v1");
 });
 
-test("claim holds only on displayed values (SPEC §0)", () => {
-  const f = toRow(ver("vF", "frontier", 0.9, 0.0100));
-  // Equal at displayed precision: 0.904 and 0.896 both show 90%.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.896, 0.0020))), "5.0");
-  // 0.834 shows 83%, 0.835 shows 84%: below the frontier on screen, no claim.
+const r6 = (tasks: number) => tasks / 6;
+
+test("claim: [B5] rule on displayed values", () => {
+  const f = toRow(ver("vF", "frontier", r6(1), 0.0100));
+  // 3 of 6 vs 1 of 6, 0.0100 / 0.0030 = 3.33 -> floored to 3.3.
+  const c = claim(f, toRow(ver("v1", "accepted", r6(3), 0.00296)));
+  assert.deepEqual(c, { b: 3, f: 1, k: "3.3" });
   assert.equal(
-    claimK(toRow(ver("vF", "frontier", 0.835, 0.01)), toRow(ver("v1", "accepted", 0.834, 0.001))),
-    null,
+    claimLine(c!),
+    "3 of 6 unseen terrains vs the frontier model at 1 of 6, at 3.3x lower cost per gait",
   );
-  // Cost not lower at 4 places: 0.01004 shows $0.0100.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.01004))), null);
-  // Cost that displays as $0.0000: no unbounded ratio.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.00004))), null);
-  // k from the rounded costs, floored to one decimal: 0.0100 / 0.0030 = 3.33 -> 3.3.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.00296))), "3.3");
-  // Displayed k must be at least 1.5: 0.0100 / 0.0099 = 1.01 -> "1.0", 0.0100 / 0.0070 = 1.43 -> "1.4".
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0099))), null);
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0070))), null);
-  // 0.0100 / 0.0066 = 1.515 -> "1.5": exactly at the bar, earned.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0066))), "1.5");
-  // 0.0100 / 0.0067 = 1.4925 would round to 1.5 but floors to 1.4: not earned.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.0067))), null);
-  // n must be printed and positive.
-  assert.equal(claimK(f, toRow(ver("v1", "accepted", 0.95, 0.001, 0))), null);
-  assert.equal(claimK(null, toRow(ver("v1", "accepted", 0.95, 0.001))), null);
-  assert.equal(claimLine("3.3"), "matches frontier reliability at 3.3× lower cost");
+  // Equal terrains: not strictly greater, no claim.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(1), 0.001))), null);
+  // Fewer terrains: no claim.
+  assert.equal(claim(toRow(ver("vF", "frontier", r6(4), 0.01)), toRow(ver("v1", "accepted", r6(3), 0.001))), null);
+  // No frontier or no best: no claim.
+  assert.equal(claim(null, toRow(ver("v1", "accepted", r6(3), 0.001))), null);
+  assert.equal(claim(f, null), null);
+});
+
+test("claim: both at 0 of 6 shows no claim (today's frontier and v0)", () => {
+  const frontier = toRow(ver("frontier", "frontier", 0, 0.031978, 18));
+  const v0 = toRow(ver("v0", "baseline", 0, 0.000521, 18));
+  assert.equal(frontier?.tasksPassed, 0);
+  assert.equal(v0?.tasksPassed, 0);
+  assert.equal(claim(frontier, v0), null);
+});
+
+test("claim: best must pass more than 0 terrains even if the frontier is lower", () => {
+  // A negative or rounding-to-0 frontier cannot make 0 of 6 a claim.
+  assert.equal(claim(toRow(ver("vF", "frontier", 0, 0.01)), toRow(ver("v1", "accepted", 0.05, 0.001))), null);
+});
+
+test("claim: cost must display above $0.0000 and k above 1.0; no 1.5 minimum", () => {
+  const f = toRow(ver("vF", "frontier", r6(1), 0.0100));
+  // Best cost displays as $0.0000: no unbounded ratio.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.00004))), null);
+  // Cost not lower at 4 places: 0.01004 shows $0.0100, k = 1.0.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.01004))), null);
+  // Costlier than the frontier: k < 1.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.02))), null);
+  // 0.0100 / 0.0099 = 1.01 floors to "1.0": not above 1.0.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.0099))), null);
+  // 0.0100 / 0.0090 = 1.11 floors to "1.1": earned (the old 1.5 bar is gone).
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.009)))?.k, "1.1");
+  // 0.0100 / 0.0070 = 1.43 floors to "1.4": earned.
+  assert.equal(claim(f, toRow(ver("v1", "accepted", r6(3), 0.007)))?.k, "1.4");
+});
+
+test("claim line never says matches, beats, or smarter", () => {
+  const line = claimLine({ b: 2, f: 0, k: "12.5" });
+  for (const word of ["matches", "beats", "smarter", "×"]) assert.ok(!line.includes(word), word);
 });

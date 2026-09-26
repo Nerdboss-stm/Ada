@@ -21,7 +21,7 @@ export type Cheat = { key: string; doc: FramesDoc & { violation_frame: number };
 
 export type GhostState = { ghosts: Ghost[]; leader: string | null; cheat: Cheat | null; error: string | null };
 
-async function fetchFrames(url: string): Promise<FramesDoc> {
+export async function fetchFrames(url: string): Promise<FramesDoc> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`frames ${url}: ${res.status}`);
   return (await res.json()) as FramesDoc;

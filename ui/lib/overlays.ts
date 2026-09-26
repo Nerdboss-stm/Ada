@@ -113,11 +113,13 @@ export function formatMeters(x: number): string {
 // Displayed precision. The claim is judged on these integers, never on the raw floats.
 const RELIABILITY_SCALE = 100; // whole percent
 const COST_SCALE = 10_000; // USD to 4 places
-const MIN_CLAIM_K = 1.5; // compared on the one-decimal k as displayed
+/** Holdout terrains (sim/tasks.py); holdout_reliability_80 is the fraction of these passed. */
+export const HOLDOUT_TASKS = 6;
 
 export type Row = {
   versionId: string;
   reliabilityPct: number; // integer percent as displayed
+  tasksPassed: number; // holdout terrains passed, of HOLDOUT_TASKS
   n: number;
   costUnits: number; // integer 1/10000 USD as displayed
   reliability: string;
@@ -137,6 +139,7 @@ export function toRow(v: VersionDoc | null | undefined): Row | null {
   return {
     versionId: v._id,
     reliabilityPct,
+    tasksPassed: Math.round(r * HOLDOUT_TASKS),
     n,
     costUnits,
     reliability: `${reliabilityPct}%`,
@@ -160,23 +163,24 @@ export function pickBest(versions: VersionDoc[]): VersionDoc | null {
   return versions.find((v) => v._id === id) ?? null;
 }
 
+export type Claim = { b: number; f: number; k: string };
+
 /**
- * SPEC §0 on the displayed rounded values: best reliability ≥ frontier's, best cost < frontier's,
- * both with n > 0. Returns the cost ratio k as displayed (floored to one decimal so it never
- * overstates), or null when the claim is not earned, including a displayed k below 1.5. A best cost that displays as $0.0000 earns
- * nothing: the ratio would be unbounded.
+ * NOTES.md [B5] claim rule, on displayed values: the best version passes strictly more holdout
+ * terrains than the frontier and more than 0, its cost per gait displays above $0.0000, and the
+ * cost ratio k (from the displayed costs, floored to one decimal so it never overstates) is
+ * above 1.0. Otherwise null, and the screen shows both measured rows only.
  */
-export function claimK(frontier: Row | null, best: Row | null): string | null {
+export function claim(frontier: Row | null, best: Row | null): Claim | null {
   if (!frontier || !best) return null;
-  if (frontier.n <= 0 || best.n <= 0) return null;
-  if (best.reliabilityPct < frontier.reliabilityPct) return null;
-  if (best.costUnits <= 0 || best.costUnits >= frontier.costUnits) return null;
+  if (best.tasksPassed <= frontier.tasksPassed || best.tasksPassed <= 0) return null;
+  if (best.costUnits <= 0) return null;
   const k = Math.floor((frontier.costUnits / best.costUnits) * 10) / 10;
-  // Never "1.0× lower cost": the displayed k itself must be at least MIN_CLAIM_K.
-  if (k < MIN_CLAIM_K) return null;
-  return k.toFixed(1);
+  if (!(k > 1)) return null;
+  return { b: best.tasksPassed, f: frontier.tasksPassed, k: k.toFixed(1) };
 }
 
-export function claimLine(k: string): string {
-  return `matches frontier reliability at ${k}× lower cost`;
+/** NOTES.md [B5] wording, word for word. Never "matches", "beats", or "smarter". */
+export function claimLine({ b, f, k }: Claim): string {
+  return `${b} of ${HOLDOUT_TASKS} unseen terrains vs the frontier model at ${f} of ${HOLDOUT_TASKS}, at ${k}x lower cost per gait`;
 }

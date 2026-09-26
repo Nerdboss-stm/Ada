@@ -35,6 +35,7 @@ export type StreamMessage =
       frontier: Document | null;
       versions: Document[];
       latest_edit: Document | null;
+      latest_rejected_edit: Document | null;
       showcase_frames_ids: string[];
       events: AdaEvent[];
     }

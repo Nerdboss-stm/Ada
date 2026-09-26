@@ -4,7 +4,7 @@ import { useMemo, type CSSProperties, type RefObject } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type { VersionDoc } from "@/lib/ghosts";
 import {
-  claimK,
+  claim,
   claimLine,
   formatDelta,
   gateCells,
@@ -127,7 +127,7 @@ function Spine({ versions }: { versions: VersionDoc[] }) {
   const frontier = useMemo(() => toRow(pickFrontier(versions)), [versions]);
   const best = useMemo(() => toRow(pickBest(versions)), [versions]);
   if (!frontier && !best) return null;
-  const k = claimK(frontier, best);
+  const earned = claim(frontier, best);
   return (
     <section className={`absolute right-6 top-5 px-4 py-3 text-base tabular-nums ${glass}`} data-testid="spine">
       <table>
@@ -144,9 +144,9 @@ function Spine({ versions }: { versions: VersionDoc[] }) {
           <RowLine label={best ? `best ${best.versionId}` : "best · none"} row={best} color={INK} />
         </tbody>
       </table>
-      {k && (
+      {earned && (
         <p className="mt-2 font-medium" style={{ color: CLAIM }} data-testid="claim">
-          {claimLine(k)}
+          {claimLine(earned)}
         </p>
       )}
     </section>

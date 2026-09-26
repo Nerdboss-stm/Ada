@@ -24,7 +24,12 @@ export function useAdaStream(): AdaStream {
         const versions = [...(data.versions as VersionDoc[]), ...(data.frontier ? [data.frontier as VersionDoc] : [])];
         setState((s) => ({
           versions: mergeVersions(s.versions, versions),
-          edits: data.latest_edit ? mergeEdits(s.edits, [data.latest_edit as EditDoc]) : s.edits,
+          // The latest rejected edit rides along so the cheat survives a reload; the card still
+          // shows the newest edit (latestEdit), which is never older than it.
+          edits: mergeEdits(
+            s.edits,
+            [data.latest_edit, data.latest_rejected_edit].filter((e) => e !== null && e !== undefined) as EditDoc[],
+          ),
           events: mergeEvents(s.events, data.events),
           error: null,
         }));

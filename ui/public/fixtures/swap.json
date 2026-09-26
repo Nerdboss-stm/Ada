@@ -1,0 +1,21 @@
+{
+  "fixture": true,
+  "_note": "fixture: hand-written for ?mode=swap until Lane B writes the real swaps document. right_version, right_holdout and harness_diff are made up.",
+  "left_version": "v0",
+  "right_version": "fixture",
+  "task_id": "holdout-s3-f0.45",
+  "left_frames_id": "92267354eb2aa3c7652eaa1c",
+  "right_frames_id": "6b8e6ec9ad5fffd33ba308d1",
+  "left_holdout": 0,
+  "right_holdout": 3,
+  "model_id": "openai/gpt-6-luna",
+  "verifier_sha": "5e2fe18c3cd6816003f11383f61cb07e35e594b02e09b4920d5db0def1fe3b84",
+  "mujoco_version": "3.14.0",
+  "manifest_version": "cd5f83ef0ea3",
+  "harness_diff": [
+    "+ rules: \"check the contact log before resubmitting\" (fixture)",
+    "- context_policy.max_attempts: 1 (fixture)",
+    "+ context_policy.max_attempts: 3 (fixture)"
+  ],
+  "captured_at": "2026-09-26T12:40:00Z"
+}
