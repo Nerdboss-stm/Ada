@@ -27,14 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from core.contracts import Harness
 
-# CONTRACTS §6, exactly 6, with the one-line descriptions the controller sees.
+# CONTRACTS §6, exactly 5 (NOTES [A13]), with the one-line descriptions the controller sees.
 TOOL_WHITELIST: dict[str, str] = {
     "read_task": "read the task: slope, friction, target distance, gait schema and neutral joint offsets",
     "submit_gait": "submit a gait for scoring; each call counts as one attempt",
     "preview_run": "try a gait for 3 s on a practice seed: distance, fell, max torso tilt, contact rhythm",
     "get_contact_log": "each leg's ground contact during the last preview, in equal time bins",
     "list_my_attempts": "the gaits previewed earlier in this episode, with their preview results",
-    "lookup_skill": "gait summaries stored from earlier accepted versions on similar tasks",
 }
 CHEAP_ROLES = ("agent_v0", "agent_v0.alt")  # NOTES [A6] RULE
 ENGINE_BOUNDS: dict[str, tuple[int, int]] = {"temperature": (0, 1), "max_attempts": (1, 6)}

@@ -81,7 +81,10 @@ def world(monkeypatch, adb):
             "edit_doc": adb.edits.find_one({"_id": edit.id}),
             "candidate_doc": adb.versions.find_one({"_id": candidate.id}),
         })
-        return W.results.pop(0)
+        out = W.results.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
 
     def run_split(version_id, split, k, *, harness=None, db_name):
         W.split_calls.append((version_id, split, k))
@@ -269,14 +272,56 @@ def test_closing_unsets_open_lock(world, adb):
     assert "open_lock" not in round_doc(adb, r2["round_id"])
 
 
-def test_error_still_closes_round(world, adb):
-    world.proposals = [P_TEMP]
-    world.results = [gate_result(verdict="maybe")]
+def test_error_still_closes_round(world, adb, monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("controller broke")
+
+    monkeypatch.setattr(controller, "propose", boom)  # outside gating: the round still ends
     with pytest.raises(ValueError):
         actuator.run_round(world.head_id, db_name=ADA_TEST)
     doc = round_doc(adb, world.round_ids[-1])
     assert "open_lock" not in doc and doc["status"] == "closed"
     assert doc["stop_reason"].startswith("error: ValueError")
+
+
+def test_gate_exception_rejects_one_candidate_and_round_goes_on(world, adb):
+    """NOTES [A13]: an exception gating proposal 0 rejects it; proposal 1 is still gated."""
+    world.proposals = [P_TEMP, P_RULE]
+    world.results = [NotImplementedError("harness lists tools with no implementation: ['x']"),
+                     gate_result(rel=0.6, parent=0.5)]
+    r = actuator.run_round(world.head_id, db_name=ADA_TEST)
+
+    assert len(world.gate_calls) == 2 and r["stop_reason"] == "proposals exhausted"
+    (bad,), (good,) = r["rejected"], r["accepted"]
+    reason = "harness error: NotImplementedError: harness lists tools with no implementation: ['x']"
+    assert r["decisions"][0]["reason"] == reason and r["head"] == good
+    assert world.gate_calls[1]["parent"].id == world.head_id  # the errored edit is not applied
+
+    v = adb.versions.find_one({"_id": bad})
+    assert (v["status"], v["parent"], v.get("metrics")) == ("rejected", world.head_id, None)
+    assert v["harness"]["engine"]["temperature"] == 0.2
+    e = adb.edits.find_one({"to_version": bad})
+    assert (e["verdict"], e["reason"], e["actual_delta"], e["actual_delta_m"]) == \
+        ("rejected", reason, None, None)
+    ev = actuator_events(adb, r["round_id"])
+    assert [(x["status"], x["payload"]["event"]) for x in ev] == [
+        ("start", "round_open"), ("fail", "decision"), ("pass", "decision"), ("info", "round_close")]
+    assert ev[1]["edit_id"] == e["_id"] and ev[1]["payload"]["reason"] == reason
+    assert ev[-1]["payload"]["rejected"] == [bad]
+
+
+def test_bad_gate_result_is_a_harness_error_with_clipped_message(world, adb):
+    world.proposals = [P_TEMP]
+    world.results = [RuntimeError("x" * 500)]
+    r = actuator.run_round(world.head_id, db_name=ADA_TEST)
+    assert r["decisions"][0]["reason"] == "harness error: RuntimeError: " + "x" * 120
+
+    world.proposals = [P_TEMP]
+    world.results = [gate_result(verdict="maybe")]
+    r = actuator.run_round(world.head_id, db_name=ADA_TEST)
+    (bad,) = r["rejected"]
+    reason = adb.edits.find_one({"to_version": bad})["reason"]
+    assert reason.startswith("harness error: ValueError: gate returned verdict 'maybe'")
 
 
 def test_budget_usd_stop_is_recorded(world, adb):

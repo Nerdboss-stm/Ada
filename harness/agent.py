@@ -35,8 +35,8 @@ DEFAULT_MAX_ATTEMPTS = 3
 MAX_PREVIEWS = 6  # preview_run calls per episode, valid or not
 PREVIEW_LIMIT_MSG = "preview limit reached; submit your gait now"
 EXTRA_TURNS = 2  # read_task turn + one spare turn, on top of one turn per preview and per attempt
-TOOL_WHITELIST = (  # CONTRACTS §6, exactly 6; immutable
-    "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts", "lookup_skill",
+TOOL_WHITELIST = (  # CONTRACTS §6, exactly 5 (NOTES [A13]: lookup_skill cut); immutable
+    "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts",
 )
 
 V0_HARNESS = Harness(

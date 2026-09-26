@@ -11,7 +11,9 @@ written and the edit gets its verdict (actual_delta null when the gate rolled no
 train.n 0), plus actual_delta_m (candidate minus parent train mean distance) and the
 candidate's attempt_frames_id (NOTES [A11]); the child's metrics keep the gate's
 train_mean_distance_m, which holdout scoring never overwrites. An accepted child becomes the head and is scored on
-holdout (k 3) with its showcase run recorded. No new proposal starts once the round's spend
+holdout (k 3) with its showcase run recorded. Any exception while gating one candidate rejects
+it with reason "harness error: {Name}: {message[:120]}" (child written rejected, decision
+emitted) and the round goes on to the next proposal (NOTES [A13]). No new proposal starts once the round's spend
 or time has reached its budget; the reason lands in the round document.
 """
 
@@ -37,6 +39,7 @@ STAGE = "actuator"
 HOLDOUT_K = 3
 SHOWCASE_K = 1
 REASON_CHARS = 300
+ERROR_CHARS = 120  # exception message kept in a harness-error reason
 LOCK_INDEX = "one_open_round"
 VERDICTS = ("accepted", "rejected")
 _VERSION_ID = re.compile(r"^v(\d+)$")
@@ -156,6 +159,29 @@ def _stale(p: EditProposal, head: Version, index: int, round_id: str, err: EditE
     return decision
 
 
+def harness_error_reason(e: BaseException) -> str:
+    return f"harness error: {type(e).__name__}: {str(e)[:ERROR_CHARS]}"
+
+
+def _gate_error(p: EditProposal, head: Version, candidate: Version, edit: Edit, index: int,
+                round_id: str, err: Exception, db_name: str) -> dict[str, Any]:
+    """The gate raised: the child is written rejected (no metrics) and the edit gets its verdict."""
+    reason = harness_error_reason(err)
+    child = Version.model_validate({**candidate.model_dump(by_alias=True), "status": "rejected"})
+    db(db_name).versions.insert_one(child.model_dump(by_alias=True))
+    db(db_name).edits.update_one({"_id": edit.id}, {"$set": {
+        "verdict": "rejected", "reason": reason, "actual_delta": None, "actual_delta_m": None,
+    }})
+    emit(STAGE, "fail", {
+        "event": "decision", "decision": "rejected", "index": index, "from_version": head.id,
+        "to_version": child.id, "reason": reason, "actual_delta": None,
+        "predicted_delta": p.predicted_delta, "predicted_delta_m": p.predicted_delta_m,
+        "actual_delta_m": None, "attempt_frames_id": None, "frames_id": None, "stages": None,
+    }, round_id=round_id, version_id=child.id, edit_id=edit.id, db_name=db_name)
+    return {"index": index, "decision": "rejected", "edit_id": edit.id, "version_id": child.id,
+            "reason": reason, "actual_delta": None, "actual_delta_m": None}
+
+
 def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: str = ADA,
             ) -> tuple[dict[str, Any], Version | None, float]:
     """Gate one proposal against `head`. Returns (decision, new head or None, spend)."""
@@ -175,15 +201,19 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
     candidate = Version(_id=child_id, parent=head.id, status="candidate", harness=harness,
                         created_at=_now())
 
-    result = _run_gate(parent=head, candidate=candidate, edit=edit, round_id=round_id, db_name=db_name)
-    verdict = result["verdict"]
-    if verdict not in VERDICTS:
-        raise ValueError(f"gate returned verdict {verdict!r}; expected one of {VERDICTS}")
-    train = result["train"]
-    metrics = Metrics(train_reliability=train["reliability"], holdout_reliability_80=0.0,
-                      mean_distance_m=train["mean_distance_m"],
-                      cost_per_run_usd=train["cost_per_run_usd"], n=train["n"],
-                      train_mean_distance_m=result.get("train_mean_distance_m"))
+    try:
+        result = _run_gate(parent=head, candidate=candidate, edit=edit, round_id=round_id,
+                           db_name=db_name)
+        verdict = result["verdict"]
+        if verdict not in VERDICTS:
+            raise ValueError(f"gate returned verdict {verdict!r}; expected one of {VERDICTS}")
+        train = result["train"]
+        metrics = Metrics(train_reliability=train["reliability"], holdout_reliability_80=0.0,
+                          mean_distance_m=train["mean_distance_m"],
+                          cost_per_run_usd=train["cost_per_run_usd"], n=train["n"],
+                          train_mean_distance_m=result.get("train_mean_distance_m"))
+    except Exception as e:  # one candidate never ends the round
+        return _gate_error(p, head, candidate, edit, index, round_id, e, db_name), None, 0.0
     child = Version.model_validate({**candidate.model_dump(by_alias=True), "status": verdict,
                                     "metrics": metrics.model_dump()})
     db(db_name).versions.insert_one(child.model_dump(by_alias=True))
