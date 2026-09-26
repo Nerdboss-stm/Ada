@@ -7,9 +7,11 @@
 
 A silent constraints pre-check runs first. If it fails, the first three cells are
 emitted as info {"skipped": true}, gate.constraints emits start then fail, and the
-edit is rejected with zero model calls. Otherwise gate.verifier, gate.gpa, gate.meta
-and gate.constraints (checked again) each emit start then pass or fail; the first
-failure rejects and every later cell is emitted as info {"skipped": true}.
+edit is rejected with zero model calls. Otherwise all four stages run in card order,
+even after an earlier failure: gate.verifier, gate.gpa, gate.meta and gate.constraints
+(checked again) each emit start then pass or fail, and `stages` shows every result.
+The verdict is accepted only when all four pass; `reason` is the first failure's reason
+in card order. This is what counts edits the physics rejected that the judge passed.
 
 Stages 2 and 3 live in gate.judge and gate.meta (A9), loaded through importlib. Each
 exposes run(*, parent, candidate, edit, round_id, db_name, verifier[, judge]) ->
@@ -69,13 +71,15 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
         "parent_train_reliability": 0.0, "frames_id": None,
     }
 
-    def fail(stage: str, reason: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def fail(stage: str, reason: str, payload: dict[str, Any] | None = None) -> None:
         stages[stage] = "fail"
-        out["reason"] = reason
+        if out["reason"] is None:
+            out["reason"] = reason
         emit(stage, "fail", {"reason": reason, **(payload or {})}, **ids)
-        for later in CARD_STAGES[CARD_STAGES.index(stage) + 1:]:
-            emit(later, "info", SKIPPED, **ids)
-        return out
+
+    def passed(stage: str, payload: dict[str, Any] | None = None) -> None:
+        stages[stage] = "pass"
+        emit(stage, "pass", payload or {}, **ids)
 
     reason = constraints.check(candidate, db_name)
     if reason is not None:
@@ -85,7 +89,8 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
         for stage in (VERIFIER, GPA, META):
             emit(stage, "info", SKIPPED, **ids)
         emit(CONSTRAINTS, "start", {}, **ids)
-        return fail(CONSTRAINTS, reason)
+        fail(CONSTRAINTS, reason)
+        return out
 
     # 1. verifier
     emit(VERIFIER, "start", {"tasks": list(verifier_stage.GATE_TASKS), "k": verifier_stage.K}, **ids)
@@ -94,12 +99,12 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
     out["parent_train_reliability"] = res["parent"]["reliability"] if res["parent"] else 0.0
     out["frames_id"] = res["frames_id"]
     payload = _verifier_payload(res, edit)
-    if not res["pass"]:
-        return fail(VERIFIER, res["reason"], payload)
-    stages[VERIFIER] = "pass"
-    emit(VERIFIER, "pass", payload, **ids)
+    if res["pass"]:
+        passed(VERIFIER, payload)
+    else:
+        fail(VERIFIER, res["reason"], payload)
 
-    # 2. judge, 3. meta
+    # 2. judge, 3. meta: run even when the verifier failed
     common = {"parent": parent, "candidate": candidate, "edit": edit, "round_id": round_id,
               "db_name": db_name, "verifier": res}
     judged: dict[str, Any] | None = None
@@ -111,17 +116,19 @@ def run_gate(parent: Version, candidate: Version, edit: Edit, round_id: str,
         result = runner(**common, **extra)
         if stage == GPA:
             judged = result
-        if not result["pass"]:
-            return fail(stage, result["reason"] or f"{stage} failed", result.get("payload"))
-        stages[stage] = "pass"
-        emit(stage, "pass", result.get("payload") or {}, **ids)
+        if result["pass"]:
+            passed(stage, result.get("payload"))
+        else:
+            fail(stage, result["reason"] or f"{stage} failed", result.get("payload"))
 
     # 4. constraints, checked again at the end
     emit(CONSTRAINTS, "start", {}, **ids)
     reason = constraints.check(candidate, db_name)
-    if reason is not None:
-        return fail(CONSTRAINTS, reason)
-    stages[CONSTRAINTS] = "pass"
-    emit(CONSTRAINTS, "pass", {}, **ids)
-    out["verdict"] = "accepted"
+    if reason is None:
+        passed(CONSTRAINTS)
+    else:
+        fail(CONSTRAINTS, reason)
+
+    if all(v == "pass" for v in stages.values()):
+        out["verdict"] = "accepted"
     return out
