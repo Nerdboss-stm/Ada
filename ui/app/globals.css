@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-plex-sans);
+  --font-serif: var(--font-plex-serif);
+  /* The UI uses no monospace; anything that asks for mono gets Plex Sans. */
+  --font-mono: var(--font-plex-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-plex-sans), sans-serif;
+}
+
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--font-plex-sans), sans-serif;
+}
