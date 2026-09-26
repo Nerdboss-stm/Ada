@@ -6,7 +6,8 @@ The prompt carries the head harness (never its metrics: holdout stays unseen), t
 whitelist, the sensor summary with its example trace ids, the last 10 edits with verdict and
 reason, and the objective. Dynamic content (sensor readings, gate reasons) goes in verbatim: it is the gate's real feedback. Only the static
 template we wrote is checked against BANNED. The cost is estimated before the call and the call
-is refused above BUDGET_USD. The reply is JSON; invalid (including a missing predicted_delta_m
+is refused above BUDGET_USD. The reply is JSON; when the strict parse fails (a reply cut off at
+max_tokens), every complete edit object is salvaged; invalid (including a missing predicted_delta_m
 or literal gait values), stale and duplicate proposals are dropped, the rest sorted smallest
 change first and cut to MAX_EDITS. One controller event.
 """
@@ -34,7 +35,7 @@ OBJECTIVE = "0.7 × train reliability + 0.3 × normalized mean distance"
 MAX_EDITS = 6
 N_RECENT = 10
 BUDGET_USD = 3.0
-MAX_TOKENS = 4096
+MAX_TOKENS = 16000  # the reasoning model thinks before it answers; 4096 truncated the JSON
 CHARS_PER_TOKEN = 3  # deliberately low, so the estimate errs high
 BANNED = ("power", "glitch", "exploit", "cheat")
 EDIT_FIELDS = ("_id", "primitive", "op", "path", "old", "new", "predicted_delta", "predicted_delta_m",
@@ -167,6 +168,37 @@ def parse_reply(text: str) -> list[Any] | None:
     return data if isinstance(data, list) else None
 
 
+_OPEN_FENCE = re.compile(r"^```(?:json)?\s*")
+
+
+def salvage_reply(text: str) -> list[Any] | None:
+    """Every complete element of the edits array, read one by one, stopping at the first that is
+    cut off or malformed. None when the reply has no array at all."""
+    text = _OPEN_FENCE.sub("", (text or "").strip())
+    key = text.find('"edits"')
+    start = text.find("[", key if key >= 0 else 0)
+    if start < 0:
+        return None
+    decoder, items, i = json.JSONDecoder(), [], start + 1
+    while True:
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        if i >= len(text) or text[i] == "]":
+            return items
+        try:
+            item, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return items
+        items.append(item)
+
+
+def truncated(result: Any) -> bool:
+    """The reply hit max_tokens. ChatResult has no finish_reason yet, so the completion tokens tell."""
+    if getattr(result, "finish_reason", None) == "length":
+        return True
+    return (result.usage or {}).get("completion_tokens", 0) >= MAX_TOKENS
+
+
 def select(items: list[Any], harness: Harness) -> list[EditProposal]:
     """Valid proposals that apply to `harness`, deduplicated, smallest change first, at most MAX_EDITS."""
     kept: dict[tuple[str, ...], EditProposal] = {}
@@ -201,10 +233,13 @@ def propose(
         raise ControllerBudgetError(f"controller call estimated at ${estimate:.4f} > ${BUDGET_USD}")
 
     result = cached_chat(ROLE, messages, max_tokens=MAX_TOKENS)
-    items = parse_reply(result.message.get("content") or "")
+    content = result.message.get("content") or ""
+    items = parse_reply(content)
+    if items is None:
+        items = salvage_reply(content)
     proposals = select(items or [], head.harness)
     emit(ROLE, "info" if items is not None else "fail",
          {"count": len(proposals), "received": len(items or []), "estimate_usd": estimate,
-          "cost_usd": result.cost_usd, "cached": result.cached},
+          "cost_usd": result.cost_usd, "cached": result.cached, "truncated": truncated(result)},
          round_id=round_id, version_id=head.id, db_name=db_name)
     return proposals

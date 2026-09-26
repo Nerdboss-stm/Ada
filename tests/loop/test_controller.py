@@ -67,6 +67,7 @@ def fake(monkeypatch):
     """Patch cached_chat and emit; set `.reply` to control the model's answer."""
     class Fake:
         reply = json.dumps({"edits": []})
+        usage = {}
         calls = []
         events = []
 
@@ -74,13 +75,13 @@ def fake(monkeypatch):
         Fake.calls.append({"role": role, "messages": messages, "params": params})
         return ChatResult(role=role, model_id="m", prompt_hash="h",
                           message={"role": "assistant", "content": Fake.reply},
-                          usage={}, cost_usd=0.02, cached=False)
+                          usage=Fake.usage, cost_usd=0.02, cached=False)
 
     def emit(stage, status, payload=None, **kw):
         Fake.events.append({"stage": stage, "status": status, "payload": payload, **kw})
         return "id"
 
-    Fake.calls, Fake.events = [], []
+    Fake.calls, Fake.events, Fake.usage = [], [], {}
     monkeypatch.setattr(controller, "cached_chat", chat)
     monkeypatch.setattr(controller, "emit", emit)
     return Fake
@@ -303,6 +304,59 @@ def test_unparseable_reply_gives_no_edits(fake):
     fake.reply = "I would raise the temperature."
     assert controller.propose(head(), sensor(), []) == []
     assert [(e["status"], e["payload"]["count"]) for e in fake.events] == [("fail", 0)]
+
+
+def test_truncated_reply_salvages_complete_edits(fake):
+    """A17: a reply cut off at max_tokens keeps its complete edits and drops the cut-off one."""
+    full = json.dumps({"edits": [prop(), prop(primitive="tools", op="add", path="", old=None,
+                                              new="preview_run")]})
+    fake.reply = "```json\n" + full[:full.rindex('"new": "preview_run"')]
+    fake.usage = {"prompt_tokens": 3000, "completion_tokens": controller.MAX_TOKENS}
+    out = controller.propose(head(), sensor(), [])
+    assert [p.path for p in out] == ["temperature"]
+    ev = fake.events[0]
+    assert ev["status"] == "info" and ev["payload"]["truncated"] is True
+    assert ev["payload"]["count"] == 1 and ev["payload"]["received"] == 1
+
+
+def test_salvage_runs_on_any_failed_parse(fake):
+    fake.reply = json.dumps({"edits": [prop()]})[:-2] + ", {\"primitive\": \"rul"
+    out = controller.propose(head(), sensor(), [])
+    assert [p.path for p in out] == ["temperature"]
+    assert fake.events[0]["payload"]["truncated"] is False
+
+
+def test_truncated_from_finish_reason():
+    class R:
+        finish_reason = "length"
+        usage = {}
+    assert controller.truncated(R())
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("", None),
+    ('{"edits": [', []),
+    ('{"edits": [{"a": 1}, {"b": [2, ', [{"a": 1}]),
+    ('{"edits": [{"a": 1}, {"b": 2}]}', [{"a": 1}, {"b": 2}]),
+])
+def test_salvage_reply(text, expected):
+    assert controller.salvage_reply(text) == expected
+
+
+def test_normal_reply_unchanged(fake):
+    fake.reply = json.dumps({"edits": [prop()]})
+    fake.usage = {"prompt_tokens": 3000, "completion_tokens": 900}
+    out = controller.propose(head(), sensor(), [])
+    assert out == [EditProposal.model_validate(prop())]
+    assert fake.events[0]["payload"]["truncated"] is False
+    assert fake.calls[0]["params"]["max_tokens"] == 16000
+
+
+def test_estimate_uses_16000_output_tokens(fake, monkeypatch):
+    spec = {"id": "x", "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 10.0}
+    monkeypatch.setattr(controller, "models", lambda: {"controller": spec})
+    assert controller.MAX_TOKENS == 16000
+    assert controller.estimate_usd([]) == round(16000 * 10.0 / 1e6, 6)
 
 
 def test_over_budget_aborts_before_calling(fake, monkeypatch):
