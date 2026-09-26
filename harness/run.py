@@ -9,6 +9,8 @@ also write mean_distance_m, cost_per_run_usd (mean cost per episode) and n (task
 from that split's runs. Showcase records frames through sim.record.write_frames
 (kind "showcase", or "frontier" for the frontier baseline) and sets showcase_frames_id.
 
+Holdout runs its per-task episodes in parallel (HOLDOUT_WORKERS threads); results keep task order.
+
 v0 always runs V0_HARNESS; every other version loads its harness from `versions`.
 
 Before the first episode, harness.guardrails.load_guardrails() must pass; on a
@@ -21,6 +23,7 @@ import argparse
 import importlib
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from statistics import mean
 from typing import Any
@@ -33,6 +36,7 @@ from harness.guardrails import GuardrailError, load_guardrails
 
 SPLITS: tuple[Split, ...] = ("train", "holdout", "showcase")
 SUCCESS_SHARE = 0.8  # a task is reliable when at least 80% of its seeds succeed
+HOLDOUT_WORKERS = 6  # [A11] holdout episodes run in parallel; cached_chat caps model concurrency itself
 NO_GAIT_RESULT: dict[str, Any] = {
     "distance_m": 0.0, "fell": False,
     "sanity": {"pass": True, "violation": None, "violation_frame": None}, "success": False,
@@ -100,6 +104,7 @@ def run_task(
     ok = bool(runs) and successes / len(runs) >= SUCCESS_SHARE
     emit("harness", "pass" if ok else "fail", {
         "task_id": task.id, "attempts": ep.attempts, "valid_gait": ep.gait is not None,
+        "end_reason": ep.end_reason,
         "successes": successes, "n": len(runs),
         "mean_distance_m": round(mean(r.distance_m for r in runs), 4) if runs else 0.0,
         "cost_usd": ep.cost_usd,
@@ -155,11 +160,15 @@ def run_split(
     harness = harness or load_harness(version_id, db_name)
     tasks = tasks if tasks is not None else load_tasks(split, db_name)
     db(db_name).runs.delete_many({"version_id": version_id, "split": split})  # reruns replace
-    results = [
-        run_task(t, version_id, harness, split, k, db_name=db_name, ckpt_db=ckpt_db,
-                 frames_kind=frames_kind)
-        for t in tasks
-    ]
+    def one(t: Task) -> dict[str, Any]:
+        return run_task(t, version_id, harness, split, k, db_name=db_name, ckpt_db=ckpt_db,
+                        frames_kind=frames_kind)
+
+    if split == "holdout":
+        with ThreadPoolExecutor(max_workers=HOLDOUT_WORKERS) as pool:
+            results = list(pool.map(one, tasks))  # map keeps task order
+    else:
+        results = [one(t) for t in tasks]
     return _write_version(version_id, harness, split, results, db_name)
 
 

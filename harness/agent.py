@@ -5,8 +5,10 @@
 The model node calls core.llm.cached_chat with the role from harness.model_per_step;
 the tool node runs only tools listed in harness.tools, which must be a subset of
 TOOL_WHITELIST (CONTRACTS §6). Previews live in the checkpointed state for one episode. Every submit_gait call counts
-as an attempt; the episode ends on the first valid gait or at engine.max_attempts.
-Each step is stored in `traces.raw_steps` (trace_id = thread id).
+as an attempt; the episode ends on the first valid gait or at engine.max_attempts. preview_run calls never count
+as attempts; at most MAX_PREVIEWS run per episode, later ones return PREVIEW_LIMIT_MSG. The recursion limit leaves
+room for every preview and every attempt. Each step is stored in `traces.raw_steps` (trace_id = thread id), with
+the episode's end_reason and preview count.
 """
 
 from __future__ import annotations
@@ -30,7 +32,9 @@ from sim.gait import Gait, neutral_offsets
 SYSTEM_PROMPT = "Write a gait for Ada for this task."
 AGENT_STEP = "agent"  # key of harness.model_per_step used by the model node
 DEFAULT_MAX_ATTEMPTS = 3
-STEPS_PER_ATTEMPT = 6  # recursion budget per attempt (model + tools nodes, with read_task turns)
+MAX_PREVIEWS = 6  # preview_run calls per episode, valid or not
+PREVIEW_LIMIT_MSG = "preview limit reached; submit your gait now"
+EXTRA_TURNS = 2  # read_task turn + one spare turn, on top of one turn per preview and per attempt
 TOOL_WHITELIST = (  # CONTRACTS §6, exactly 6; immutable
     "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts", "lookup_skill",
 )
@@ -185,6 +189,7 @@ class AgentState(TypedDict):
     attempts: int
     gait: dict[str, Any] | None
     previews: Annotated[list[dict[str, Any]], operator.add]
+    preview_calls: int
     cost_usd: float
     tokens: int
     model_id: str | None
@@ -198,10 +203,26 @@ class EpisodeResult:
     tokens: int
     model_id: str
     trace_id: str
+    end_reason: str | None = None  # submitted|attempts_exhausted|previews_exhausted|step_limit|no_tool_call
 
 
 def max_attempts(harness: Harness) -> int:
     return int(harness.engine.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+
+
+def recursion_limit(harness: Harness) -> int:
+    """Supersteps for one turn (model + tools) per preview, per attempt and EXTRA_TURNS, plus a final model step."""
+    return 2 * (MAX_PREVIEWS + max_attempts(harness) + EXTRA_TURNS) + 1
+
+
+def end_reason(state: AgentState, harness: Harness, hit_step_limit: bool) -> str:
+    if state["gait"] is not None:
+        return "submitted"
+    if state["attempts"] >= max_attempts(harness):
+        return "attempts_exhausted"
+    if hit_step_limit:
+        return "previews_exhausted" if state["preview_calls"] >= MAX_PREVIEWS else "step_limit"
+    return "no_tool_call"
 
 
 def _assistant_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -239,18 +260,23 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
         }
 
     def tool_node(state: AgentState) -> dict[str, Any]:
-        attempts, gait = state["attempts"], state["gait"]
+        attempts, gait, preview_calls = state["attempts"], state["gait"], state["preview_calls"]
         messages, steps, previews = [], [], []
         for call in state["messages"][-1].get("tool_calls") or []:
             name = call.get("function", {}).get("name", "")
             raw_args = call.get("function", {}).get("arguments") or "{}"
             tool = tools.get(name)
             valid = None
+            is_preview = name == "preview_run" and tool is not None
             if tool is None:
                 result = {"ok": False, "error": f"unknown tool {name!r}; available: {list(tools)}"}
             elif tool.is_attempt and (gait is not None or attempts >= limit):
                 result = {"ok": False, "error": "no attempts left"}
+            elif is_preview and preview_calls >= MAX_PREVIEWS:
+                result = {"ok": False, "error": PREVIEW_LIMIT_MSG}
             else:
+                if is_preview:
+                    preview_calls += 1
                 if tool.is_attempt:
                     attempts += 1
                 try:
@@ -273,8 +299,10 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
             steps.append({
                 "node": "tools", "name": name, "arguments": raw_args if isinstance(raw_args, str)
                 else json.dumps(raw_args), "result": content, "attempt": attempts, "valid": valid,
+                "preview": preview_calls,
             })
-        return {"messages": messages, "steps": steps, "attempts": attempts, "gait": gait, "previews": previews}
+        return {"messages": messages, "steps": steps, "attempts": attempts, "gait": gait, "previews": previews,
+                "preview_calls": preview_calls}
 
     def after_model(state: AgentState) -> str:
         return "tools" if state["messages"][-1].get("tool_calls") else END
@@ -306,15 +334,18 @@ def run_episode(
     system = "\n".join([SYSTEM_PROMPT, *harness.rules])
     initial: AgentState = {
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": f"Task {task.id}."}],
-        "steps": [], "attempts": 0, "gait": None, "previews": [], "cost_usd": 0.0, "tokens": 0, "model_id": None,
+        "steps": [], "attempts": 0, "gait": None, "previews": [], "preview_calls": 0, "cost_usd": 0.0, "tokens": 0, "model_id": None,
     }
-    config = {"configurable": {"thread_id": tid}, "recursion_limit": STEPS_PER_ATTEMPT * max_attempts(harness)}
+    config = {"configurable": {"thread_id": tid}, "recursion_limit": recursion_limit(harness)}
+    hit_step_limit = False
     try:
         state = graph.invoke(initial, config, durability="sync")
     except GraphRecursionError:
         state = graph.get_state(config).values  # model kept calling tools without finishing
+        hit_step_limit = True
 
-    trace = Trace(trace_id=tid, raw_steps=state["steps"])
+    reason = end_reason(state, harness, hit_step_limit)
+    trace = Trace(trace_id=tid, raw_steps=state["steps"], end_reason=reason, previews=state["preview_calls"])
     db(db_name).traces.replace_one(
         {"trace_id": tid}, trace.model_dump(by_alias=True, exclude={"id"}), upsert=True,
     )
@@ -326,4 +357,5 @@ def run_episode(
         tokens=state["tokens"],
         model_id=state["model_id"] or llm.models()[role]["id"],
         trace_id=tid,
+        end_reason=reason,
     )
