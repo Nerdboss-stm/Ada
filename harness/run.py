@@ -86,6 +86,7 @@ def run_task(
             distance_m=float(result["distance_m"]), fell=bool(result["fell"]),
             sanity=Sanity.model_validate(result["sanity"]), success=bool(result["success"]),
             cost_usd=cost_share, tokens=token_share, trace_id=ep.trace_id,
+            peak_torque=result.get("peak_torque") or {},
         )
         run_id = str(db(db_name).runs.insert_one(run.model_dump(by_alias=True, exclude={"id"})).inserted_id)
         runs.append(run)

@@ -135,6 +135,7 @@ class Edit(_Doc):
     rationale: str = ""
     evidence_trace_ids: list[str] = Field(default_factory=list)
     predicted_delta: float | None = None
+    predicted_delta_m: float | None = None  # supervisor's bet: change in train mean distance, meters
     actual_delta: float | None = None
     verdict: Verdict | None = None
     reason: str | None = None
@@ -164,6 +165,7 @@ class Run(_Doc):
     cost_usd: Usd
     tokens: int
     trace_id: str | None = None
+    peak_torque: dict[str, float] = Field(default_factory=dict)  # joint -> peak |torque| / rated
 
 
 class Trace(_Doc):
@@ -194,6 +196,53 @@ class FramesDoc(_Doc):
     frames: list[Frame]
     sha256: str
     violation_frame: int | None = None
+
+
+class Swap(_Doc):
+    """One `swaps` document (scripts/capture_swap.py): v0 (left) and a best version (right)
+    re-run back to back on holdout, frames on one fixed holdout task. Flat names for the UI."""
+
+    id: DocId = Field(alias="_id")
+    captured_at: datetime
+    task_id: str  # the fixed holdout task shown in the lanes
+    k: int
+    left_version: str
+    right_version: str
+    left_holdout: int  # holdout tasks passed
+    right_holdout: int
+    left_frames_id: str | None = None
+    right_frames_id: str | None = None
+    model_id: str  # v0's agent model id
+    right_model_id: str
+    verifier_sha: str
+    mujoco_version: str
+    manifest_version: int | str
+    harness_diff: list[str] = Field(default_factory=list)
+    left_mean_distance_m: float
+    right_mean_distance_m: float
+    left_cost_per_run_usd: Usd
+    right_cost_per_run_usd: Usd
+    n: int  # holdout runs per side (tasks x k)
+
+
+class CostPerGait(_Doc):
+    v0: Usd | None = None
+    frontier: Usd | None = None
+    best: Usd | None = None
+
+
+class Scoreboard(_Doc):
+    """One `scoreboard` document (scripts/scoreboard.py)."""
+
+    id: DocId = Field(alias="_id")
+    created_at: datetime
+    best_version: str | None = None
+    rewrite_cost_usd: Usd
+    cost_per_gait: CostPerGait
+    overrated_attempts: int
+    proposals_total: int
+    physics_rejected: int
+    physics_rejected_judge_passed: int
 
 
 class Skill(_Doc):
