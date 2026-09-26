@@ -14,7 +14,9 @@
    frames ids, both agent model ids (from the runs), harness_diff (changed lines between
    the two harness documents; a model line first when the models differ), verifier_sha,
    mujoco_version, manifest_version read from the live code, and model_calls /
-   fresh_calls read from the swap traces.
+   fresh_calls read from the swap traces. The mean distances come from run_split's holdout
+   scoring (a physics-violating or gait-less run counts as -target_m, as in the gate), and
+   left_violations / right_violations count each side's physics-violating runs [B13].
 """
 
 from __future__ import annotations
@@ -81,6 +83,11 @@ def holdout_passed(runs: list[dict]) -> int:
     return sum(sum(s) / len(s) >= SUCCESS_SHARE for s in by_task.values())
 
 
+def violations(runs: list[dict]) -> int:
+    """Runs that broke a physical bound (sanity.pass false)."""
+    return sum((r.get("sanity") or {}).get("pass", True) is False for r in runs)
+
+
 def model_id_of(version_id: str, runs: list[dict]) -> str:
     counts = Counter(r["model_id"] for r in runs)
     if not counts:
@@ -141,6 +148,7 @@ def capture_swap(
         left_cost_per_run_usd=lm.cost_per_run_usd, right_cost_per_run_usd=rm.cost_per_run_usd,
         n=len(sides[left]["runs"]),
         fresh_calls=bool(steps) and not any(s.get("cached") for s in steps), model_calls=len(steps),
+        left_violations=violations(sides[left]["runs"]), right_violations=violations(sides[best]["runs"]),
     )
     db(db_name).swaps.insert_one(swap.model_dump(by_alias=True))
     return swap

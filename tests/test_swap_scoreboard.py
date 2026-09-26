@@ -17,6 +17,7 @@ from core import llm
 from core.contracts import ChatResult, Edit, Metrics, Run, Sanity, Swap, Version
 from core.db import ADA_TEST, db
 from core.events import emit
+from harness import run as HR
 from harness.agent import AGENT_STEP, V0_HARNESS
 from harness.agent import thread_id as CS_thread
 from harness.guardrails import VERIFIER_PATH, file_sha256, seed_guardrails
@@ -32,7 +33,7 @@ SWAP_FIELDS = {
     "right_holdout", "left_frames_id", "right_frames_id", "model_id", "right_model_id",
     "verifier_sha", "mujoco_version", "manifest_version", "harness_diff",
     "left_mean_distance_m", "right_mean_distance_m", "left_cost_per_run_usd",
-    "right_cost_per_run_usd", "n", "fresh_calls", "model_calls",
+    "right_cost_per_run_usd", "n", "fresh_calls", "model_calls", "left_violations", "right_violations",
 }
 FRESH_SEEN: list = []  # the fresh flag of every fake model call
 
@@ -135,6 +136,32 @@ def test_swap_document_fields_runs_and_frames(world):
     assert swap.manifest_version == CS.record.manifest_version()
     assert swap.model_calls == 2 * len(HOLDOUT) * 2  # two sides, two turns per episode
     assert swap.fresh_calls and FRESH_SEEN == [True] * swap.model_calls
+    assert (swap.left_violations, swap.right_violations) == (0, 0)
+
+
+def test_swap_violations_per_side_and_penalized_means(world, monkeypatch):
+    """[B13] a physics-violating run counts on its side and as -target_m in that side's mean."""
+    left, right = world.version("l"), world.version("r")
+    real = HR._evaluate
+    bad = HOLDOUT[1]  # not the recorded task, so the showcase re-record still reproduces
+
+    def evaluate(ep, task, seed, record):
+        result = real(ep, task, seed, record)
+        if task.id == bad.id and seed == bad.eval_seeds[0]:
+            result = {**result, "success": False,
+                      "sanity": {"pass": False, "violation": "joint torque", "violation_frame": 3}}
+        return result
+
+    monkeypatch.setattr(HR, "_evaluate", evaluate)
+    swap = capture(world, left, right)
+
+    assert (swap.left_violations, swap.right_violations) == (1, 1)
+    for vid, mean_m in ((left, swap.left_mean_distance_m), (right, swap.right_mean_distance_m)):
+        runs = list(world.db.runs.find({"version_id": vid, "split": "swap"}))
+        assert CS.violations(runs) == 1
+        targets = {t.id: t.target_m for t in HOLDOUT}
+        scored = [-targets[r["task_id"]] if not r["sanity"]["pass"] else r["distance_m"] for r in runs]
+        assert mean_m == round(sum(scored) / len(scored), 4)
 
 
 def test_swap_leaves_frozen_holdout_runs_metrics_and_traces_alone(world):

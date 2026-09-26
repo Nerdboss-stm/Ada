@@ -209,3 +209,32 @@ def test_rerun_replaces_runs_for_same_split(env):
     run(env, scripted([valid_gait()]), tasks=train_tasks(1))
     assert env.db.runs.count_documents(OWN) == 2
     assert env.db.versions.find_one({"_id": "v0"})["metrics"]["n"] == 2
+
+
+def holdout_tasks(n=1):
+    return [t for t in build_tasks() if t.split == "holdout"][:n]
+
+
+def test_holdout_counts_a_run_without_gait_as_minus_target(env):
+    task = holdout_tasks()[0]
+    run(env, scripted([invalid_gait()]), split="holdout", tasks=[task])
+    assert env.db.versions.find_one({"_id": "v0"})["metrics"]["mean_distance_m"] == -task.target_m
+
+
+def test_holdout_counts_a_violating_run_as_minus_target(env):
+    task = holdout_tasks()[0]
+
+    def evaluate(gait, task, seed, record=False):
+        ok = seed == task.eval_seeds[0]  # the second seed breaks a physical bound
+        return {"distance_m": 9.0 if not ok else 2.5, "fell": False, "success": ok,
+                "sanity": {"pass": ok, "violation": None if ok else "joint torque",
+                           "violation_frame": None if ok else 3}}
+
+    env.monkeypatch.setitem(sys.modules, "sim.verifier", types.SimpleNamespace(evaluate=evaluate))
+    run(env, scripted([valid_gait()]), split="holdout", tasks=[task])
+    assert env.db.versions.find_one({"_id": "v0"})["metrics"]["mean_distance_m"] == round((2.5 - task.target_m) / 2, 4)
+
+
+def test_train_mean_distance_stays_raw(env):
+    run(env, scripted([invalid_gait()]), tasks=train_tasks(1))
+    assert env.db.versions.find_one({"_id": "v0"})["metrics"]["mean_distance_m"] == 0.0

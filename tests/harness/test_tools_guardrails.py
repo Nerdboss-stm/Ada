@@ -20,7 +20,7 @@ COLLECTIONS = ("runs", "versions", "traces", "events", "checkpoints", "checkpoin
 ALL_TOOLS = ["read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts"]
 OWN = {"version_id": "v1"}  # [B4] ada_test is shared: query only this file's documents
 OWN_TRACE = {"trace_id": {"$regex": "^v1-"}}
-PREVIEW_KEYS = {"ok", "seconds", "distance_m", "fell", "max_tilt_deg", "rhythm"}
+PREVIEW_KEYS = {"ok", "seconds", "distance_m", "fell", "max_tilt_deg", "rhythm", "max_torque_ratio"}
 
 
 def valid_gait() -> dict:
@@ -122,9 +122,9 @@ def test_preview_uses_first_practice_seed_only(env):
         seeds.append(("reset", seed))
         return real_reset(model, data, seed)
 
-    def rollout(model, data, seed, ctrl_fn, steps=M.EPISODE_STEPS, every=M.RECORD_EVERY):
+    def rollout(model, data, seed, ctrl_fn, steps=M.EPISODE_STEPS, every=M.RECORD_EVERY, on_step=None):
         seeds.append(("rollout", seed, steps))
-        return real_rollout(model, data, seed, ctrl_fn, steps=steps, every=every)
+        return real_rollout(model, data, seed, ctrl_fn, steps=steps, every=every, on_step=on_step)
 
     env.monkeypatch.setattr(M, "reset", reset)
     env.monkeypatch.setattr(M, "rollout", rollout)

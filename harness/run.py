@@ -9,6 +9,11 @@ also write mean_distance_m, cost_per_run_usd (mean cost per episode) and n (task
 from that split's runs. Showcase records frames through sim.record.write_frames
 (kind "showcase", or "frontier" for the frontier baseline) and sets showcase_frames_id.
 
+Holdout (and the swap, which runs the holdout split) scores mean_distance_m exactly like the
+gate's score() (NOTES [B13]): a physics-violating run (sanity.pass false) or a run with no gait
+counts as -target_m, the target walked backward. Train keeps the raw mean; the gate re-scores
+train runs itself.
+
 Holdout runs its per-task episodes in parallel (HOLDOUT_WORKERS threads); results keep task order.
 
 v0 always runs V0_HARNESS; every other version loads its harness from `versions`.
@@ -46,6 +51,22 @@ NO_GAIT_RESULT: dict[str, Any] = {
     "distance_m": 0.0, "fell": False,
     "sanity": {"pass": True, "violation": None, "violation_frame": None}, "success": False,
 }
+
+
+def penalized(run: dict[str, Any]) -> bool:
+    """A run that broke a physical bound, or one without a submitted gait (stored as gait {});
+    a run without the gait key counts as having one, as in the gate."""
+    return (run.get("sanity") or {}).get("pass", True) is False or ("gait" in run and not run["gait"])
+
+
+def scored_distance(run: dict[str, Any]) -> float:
+    """The run's distance, or -target_m when penalized; the run dict carries its task's target_m."""
+    return -float(run["target_m"]) if penalized(run) else float(run["distance_m"])
+
+
+def mean_distance_m(runs: list[dict[str, Any]]) -> float:
+    """Mean scored distance over run dicts (each with target_m), rounded to 4 places."""
+    return round(mean(scored_distance(r) for r in runs), 4) if runs else 0.0
 
 
 def load_tasks(split: Split, db_name: str = ADA) -> list[Task]:
@@ -117,7 +138,7 @@ def run_task(
         "mean_distance_m": round(mean(r.distance_m for r in runs), 4) if runs else 0.0,
         "cost_usd": ep.cost_usd,
     }, version_id=version_id, db_name=db_name)
-    return {"episode": ep, "runs": runs, "ok": ok, "frames_id": frames_id}
+    return {"episode": ep, "runs": runs, "ok": ok, "frames_id": frames_id, "target_m": task.target_m}
 
 
 def _build_version(
@@ -134,8 +155,11 @@ def _build_version(
     if split in ("train", "holdout"):
         # [B3] n, distance and cost always describe the last scored split; holdout is scored
         # last, so every spine row (v0, frontier, accepted) reads the same holdout numbers.
+        scored = [{**r.model_dump(by_alias=True), "target_m": res["target_m"]}
+                  for res in results for r in res["runs"]]
         metrics.update(
-            mean_distance_m=round(mean(r.distance_m for r in runs), 4) if runs else 0.0,
+            mean_distance_m=(mean_distance_m(scored) if split == "holdout"  # [B13] gate parity
+                             else round(mean(r.distance_m for r in runs), 4) if runs else 0.0),
             # cost to produce one gait: mean over episodes (one per task), not per seed
             cost_per_run_usd=round(mean(res["episode"].cost_usd for res in results), 6) if results else 0.0,
             n=len(runs),

@@ -233,6 +233,8 @@ class Swap(_Doc):
     n: int  # holdout runs per side (tasks x k)
     fresh_calls: bool = False  # [B11] every agent model call was live (cached_chat fresh=True)
     model_calls: int = 0  # [B11] agent model calls across both sides
+    left_violations: int = 0  # [B13] physics-violating runs per side
+    right_violations: int = 0
 
 
 class CostPerGait(_Doc):
