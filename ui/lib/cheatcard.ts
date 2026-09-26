@@ -26,11 +26,12 @@ export type CheatCard = {
   model_id: string | null;
 };
 
+/** Counted from runs (gaits), never typed: every non-cli run in `ada`. */
 export type CheatCounter = {
-  overrated: number;
-  /** Accepted non-cli edits whose version has a run over the rated torque. */
-  accepted: number;
-  source: "scoreboard" | "count";
+  /** Runs with any recorded peak_torque ratio above RATED_RATIO_MAX. */
+  overrated_gaits: number;
+  /** Of those, the runs whose sanity check passed (expected 0, but measured). */
+  passed_physics: number;
 };
 
 export type EditVerdict = { _id: string; verdict?: string | null; origin?: string | null };
@@ -118,17 +119,31 @@ export function jointGeoms(forceIndex: number[], forceJoints: string[], joint: s
   return forceIndex.map((f) => (j >= 0 && f === j ? j : -1));
 }
 
-/** Accepted non-cli edits whose to_version has at least one run over the rated torque. */
-export function acceptedOverRated(
-  edits: { verdict?: string | null; origin?: string | null; to_version?: string | null }[],
-  runs: { version_id?: unknown; peak_torque?: unknown }[],
-): number {
-  const hot = new Set(runs.filter((r) => overRated(r.peak_torque)).map((r) => String(r.version_id)));
-  return edits.filter((e) => e.verdict === "accepted" && e.origin !== "cli" && typeof e.to_version === "string" && hot.has(e.to_version)).length;
+/**
+ * Versions that only ./verify (origin "cli") names as a to_version: their runs are not the loop's
+ * gaits. A version any non-cli edit also names stays in.
+ */
+export function cliOnlyVersions(edits: { origin?: string | null; to_version?: string | null }[]): Set<string> {
+  const cli = new Set<string>();
+  const loop = new Set<string>();
+  for (const e of edits) {
+    if (typeof e.to_version !== "string") continue;
+    (e.origin === "cli" ? cli : loop).add(e.to_version);
+  }
+  return new Set([...cli].filter((v) => !loop.has(v)));
 }
 
-export function counterLine(c: Pick<CheatCounter, "overrated" | "accepted">): string {
-  return `over-rated attempts today: ${c.overrated} · accepted: ${c.accepted}`;
+/** The cheat counter over runs: over-rated gaits, and how many of them passed the physics check. */
+export function gaitCounter(
+  runs: { version_id?: unknown; peak_torque?: unknown; sanity?: { pass?: unknown } | null }[],
+  cliVersions: Set<string> = new Set(),
+): CheatCounter {
+  const hot = runs.filter((r) => !cliVersions.has(String(r.version_id)) && overRated(r.peak_torque));
+  return { overrated_gaits: hot.length, passed_physics: hot.filter((r) => r.sanity?.pass === true).length };
+}
+
+export function counterLine(c: CheatCounter): string {
+  return `over-rated gaits: ${c.overrated_gaits} · passed the physics check: ${c.passed_physics}`;
 }
 
 /** `?cheatfixture=name` -> the fixture file; otherwise api/cheat. Bad names fall back to the API. */
@@ -165,7 +180,7 @@ export function parseCheat(x: unknown): CheatDoc | null {
   const d = x as Record<string, unknown>;
   const c = d.counter as Record<string, unknown> | undefined;
   const s = d.spine as Record<string, unknown> | undefined;
-  if (!c || !isCount(c.overrated) || !isCount(c.accepted) || (c.source !== "scoreboard" && c.source !== "count")) return null;
+  if (!c || !isCount(c.overrated_gaits) || !isCount(c.passed_physics) || c.passed_physics > c.overrated_gaits) return null;
   if (!s || !s.models || typeof s.models !== "object" || !Array.isArray(s.edits)) return null;
   const models: Record<string, string[]> = {};
   for (const [v, ids] of Object.entries(s.models as Record<string, unknown>)) {
@@ -176,7 +191,7 @@ export function parseCheat(x: unknown): CheatDoc | null {
   return {
     fixture: d.fixture === true,
     card: parseCard(d.card),
-    counter: { overrated: c.overrated, accepted: c.accepted, source: c.source },
+    counter: { overrated_gaits: c.overrated_gaits, passed_physics: c.passed_physics },
     spine: { models, rewrite_cost_usd: typeof cost === "number" && Number.isFinite(cost) ? cost : null, edits },
   };
 }

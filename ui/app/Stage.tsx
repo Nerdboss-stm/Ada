@@ -3,9 +3,11 @@
 import { useCallback, useMemo, useRef } from "react";
 import { OrbitControls } from "@react-three/drei";
 import { cheatTimeline } from "@/lib/cheat";
+import { directorParams } from "@/lib/director";
 import { cycleSeconds } from "@/lib/ghosts";
 import { CheatBody, CheatCardDriver, CheatVerdict } from "./Cheat";
 import CheatCard from "./CheatCard";
+import Director from "./Director";
 import { Footprints } from "./Footprints";
 import { GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
 import Overlays from "./Overlays";
@@ -17,9 +19,15 @@ import { useAdaStream } from "./useAdaStream";
 import { useCheat } from "./useCheat";
 import { useGhosts } from "./useGhosts";
 
-/** One route (SPEC §6): `?mode=swap` is v0 vs the best harness; `?mode=attempts` is the harness's bets; everything else is the demo. */
+/**
+ * One route (SPEC §6): `?pinned=1` is the scene director and `?mode=booth` its attract loop (C9);
+ * `?mode=swap` is v0 vs the best harness; `?mode=attempts` is the harness's bets; everything
+ * else is the demo.
+ */
 export default function Stage() {
   const mode = useMemo(() => new URLSearchParams(window.location.search).get("mode"), []);
+  const director = useMemo(() => directorParams(window.location.search), []);
+  if (director.pinned) return <Director booth={director.booth} />;
   if (mode === "swap") return <SwapStage />;
   if (mode === "attempts") return <AttemptsStage />;
   return <DemoStage />;

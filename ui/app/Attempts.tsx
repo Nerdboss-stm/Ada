@@ -27,13 +27,14 @@ import {
   type Schedule,
   type Scheduled,
 } from "@/lib/attempts";
+import { pinnedSlots } from "@/lib/director";
 import { legForceIndex } from "@/lib/effects";
 import type { Vec3 } from "@/lib/ghosts";
 import { formatMeters } from "@/lib/overlays";
 import type { FramesDoc, Manifest } from "@/lib/replay";
 import { Footprints } from "./Footprints";
 import { ADA, Body, playbackTime, useGeometries, type Epoch } from "./Ghosts";
-import { BG, Scene, useManifest } from "./Scene";
+import { BG, Scene, useManifest, useSharedCanvas } from "./Scene";
 import { fetchFrames } from "./useGhosts";
 
 const INK = "#e6e8ec";
@@ -56,8 +57,11 @@ const STAMP_LABEL_Y = -2.9;
 type Ready = { status: "ready"; doc: AttemptsDoc; sched: Schedule; frames: Record<string, FramesDoc>; rejected: number };
 type LoadState = { status: "loading" } | { status: "waiting" } | { status: "error"; message: string } | Ready;
 
-/** The attempts document (or `?attemptsfixture=`), its play order, and every frames doc that order names. Fetched once. */
-function useAttempts(): LoadState {
+/**
+ * The attempts document (or `?attemptsfixture=`), its play order, and every frames doc that order
+ * names. Fetched once. `editIds` (C9 director) are the pinned attempts, played in that order.
+ */
+function useAttempts(editIds: string[] | undefined): LoadState {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   useEffect(() => {
     let live = true;
@@ -67,7 +71,7 @@ function useAttempts(): LoadState {
       if (!res.ok) throw new Error(`attempts ${url}: ${res.status}`);
       const doc = parseAttemptsDoc(await res.json());
       if (!doc) throw new Error(`attempts ${url}: missing or malformed fields`);
-      const sched = schedule(orderAttempts(attemptsOf(doc)));
+      const sched = schedule(editIds ? pinnedSlots(attemptsOf(doc), editIds) : orderAttempts(attemptsOf(doc)));
       if (sched.slots.length === 0) return live && setState({ status: "waiting" });
       const ids = [...new Set(sched.slots.map((s) => s.attempt.framesId))];
       const docs = await Promise.all(ids.map((id) => fetchFrames(`/api/frames/${encodeURIComponent(id)}`)));
@@ -77,7 +81,7 @@ function useAttempts(): LoadState {
     return () => {
       live = false;
     };
-  }, []);
+  }, [editIds]);
   return state;
 }
 
@@ -220,7 +224,12 @@ function AttemptCard({ slot, view, count }: { slot: Scheduled; view: AttemptsVie
   const fileP = view.phase === "file" ? progress(view.local, tl.stampEnd, tl.end) : 0;
   const color = a.reached ? WON : LOST;
   return (
-    <section data-testid="attempt-card" data-edit={a.edit_id} className={`w-[min(760px,100%)] px-6 py-5 ${glass}`} style={filingStyle(a.kept, fileP)}>
+    <section
+      data-testid="attempt-card"
+      data-edit={a.edit_id}
+      className={`w-[min(760px,100%)] px-6 py-5 max-[800px]:w-full max-[800px]:px-4 max-[800px]:py-3 ${glass}`}
+      style={filingStyle(a.kept, fileP)}
+    >
       <div className="flex items-center gap-3 text-xs" style={{ color: MUTED }}>
         <Tag tag={a.tag} />
         <span>
@@ -230,7 +239,7 @@ function AttemptCard({ slot, view, count }: { slot: Scheduled; view: AttemptsVie
       </div>
       <p
         data-testid="attempt-rationale"
-        className="mt-3 min-h-[3.2em] text-[22px] leading-snug"
+        className="mt-3 min-h-[3.2em] text-[22px] leading-snug max-[800px]:text-[20px]"
         style={{ color: INK, textDecorationLine: !a.kept && fileP > 0 ? "line-through" : "none", textDecorationColor: LOST }}
       >
         {a.rationale.slice(0, view.typed)}
@@ -264,8 +273,15 @@ function AttemptsOverlay({ sched, view, rejected, fixture }: { sched: Schedule; 
   const walking = !view.holding && view.phase !== "intro";
   const landing = !view.holding && view.phase === "file" && !slot.attempt.kept;
   return (
-    <div className="pointer-events-none absolute inset-0 font-sans" style={{ color: INK }}>
-      <aside data-testid="notebook" className={`absolute bottom-5 left-5 top-5 flex w-[320px] flex-col px-4 py-4 ${glass}`}>
+    // Below 800 px everything stacks in one column: the card, the walk label, the tray, the notebook.
+    <div
+      className="pointer-events-none absolute inset-0 font-sans max-[800px]:flex max-[800px]:flex-col max-[800px]:gap-3 max-[800px]:overflow-hidden max-[800px]:p-4"
+      style={{ color: INK }}
+    >
+      <aside
+        data-testid="notebook"
+        className={`absolute bottom-5 left-5 top-5 flex w-[320px] flex-col px-4 py-4 max-[800px]:static max-[800px]:order-4 max-[800px]:mt-auto max-[800px]:max-h-[30vh] max-[800px]:w-full ${glass}`}
+      >
         <h2 className="text-xs uppercase tracking-widest" style={{ color: MUTED }}>
           notebook · kept edits
         </h2>
@@ -283,7 +299,7 @@ function AttemptsOverlay({ sched, view, rejected, fixture }: { sched: Schedule; 
           ))}
         </ol>
       </aside>
-      <div className="absolute left-[360px] right-6 top-6 flex justify-center">
+      <div className="absolute left-[360px] right-6 top-6 flex justify-center max-[800px]:static max-[800px]:order-1">
         {!view.holding && <AttemptCard key={`${view.index}:${slot.attempt.edit_id}`} slot={slot} view={view} count={sched.slots.length} />}
         {view.holding && (
           <p className="text-[26px] font-semibold" style={{ color: INK }}>
@@ -292,13 +308,17 @@ function AttemptsOverlay({ sched, view, rejected, fixture }: { sched: Schedule; 
         )}
       </div>
       {walking && (
-        <p data-testid="walk-label" className="absolute bottom-6 left-[360px] right-[240px] text-center text-base" style={{ color: MUTED }}>
+        <p
+          data-testid="walk-label"
+          className="absolute bottom-6 left-[360px] right-[240px] text-center text-base max-[800px]:static max-[800px]:order-2"
+          style={{ color: MUTED }}
+        >
           {terrainLabel(slot.attempt.terrain)} · replay {slot.timeline.speed}×
         </p>
       )}
       <div
         data-testid="tray"
-        className={`absolute bottom-5 right-5 w-[200px] px-4 py-3 text-center ${glass}`}
+        className={`absolute bottom-5 right-5 w-[200px] px-4 py-3 text-center max-[800px]:static max-[800px]:order-3 max-[800px]:w-full max-[800px]:py-2 ${glass}`}
         style={{ borderColor: landing ? LOST : undefined }}
       >
         <div className="text-[40px] font-semibold leading-none tabular-nums">{rejected}</div>
@@ -315,10 +335,14 @@ function AttemptsOverlay({ sched, view, rejected, fixture }: { sched: Schedule; 
   );
 }
 
-/** `?mode=attempts`: the harness's bets, one attempt at a time, in the order orderAttempts computes. */
-export default function AttemptsStage() {
+/**
+ * `?mode=attempts`: the harness's bets, one attempt at a time, in the order orderAttempts
+ * computes; the C9 director passes the pinned edit ids instead.
+ */
+export default function AttemptsStage({ editIds }: { editIds?: string[] } = {}) {
   const { manifest, error: manifestError } = useManifest();
-  const state = useAttempts();
+  const state = useAttempts(editIds);
+  const shared = useSharedCanvas();
   const epoch = useRef<number | null>(null);
   const [view, setView] = useState<AttemptsView | null>(null);
 
@@ -334,7 +358,7 @@ export default function AttemptsStage() {
     (mismatch > 0 ? `${mismatch} attempt frames doc(s) skipped: manifest_version mismatch` : null);
 
   return (
-    <div className="relative h-dvh w-full" style={{ background: BG }}>
+    <div className="relative h-full w-full" style={shared ? undefined : { background: BG }}>
       <Scene
         zUp={
           show &&

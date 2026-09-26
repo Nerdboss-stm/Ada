@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   QUOTE_MAX,
-  acceptedOverRated,
   agentQuote,
   cheatSourceUrl,
+  cliOnlyVersions,
   clipQuote,
   counterLine,
   firstSentence,
+  gaitCounter,
   isOverratedReject,
   jointGeoms,
   overRated,
@@ -111,27 +112,32 @@ test("the red joint lights exactly the geoms that joint drives on the real manif
   assert.ok(jointGeoms(forceIndex, manifest.force_joints, null).every((i) => i === -1));
 });
 
-test("accepted is counted: accepted non-cli edits whose version has a run over rated torque", () => {
+test("the counter counts gaits: runs over rated torque, and those whose physics check passed; cli-only versions excluded", () => {
   const edits = [
-    { verdict: "accepted", origin: "model", to_version: "v2" },
-    { verdict: "accepted", origin: "model", to_version: "v3" },
-    { verdict: "accepted", origin: "cli", to_version: "v4" },
-    { verdict: "rejected", origin: "model", to_version: "v5" },
-    { verdict: "accepted", origin: "model", to_version: null },
+    { origin: "model", to_version: "v2" },
+    { origin: "cli", to_version: "v4" },
+    { origin: "cli", to_version: "v3" },
+    { origin: "model", to_version: "v3" },
+    { origin: "cli", to_version: null },
   ];
+  const cli = cliOnlyVersions(edits);
+  assert.deepEqual([...cli], ["v4"]);
   const runs = [
-    { version_id: "v2", peak_torque: { hip_1: 0.8 } },
-    { version_id: "v3", peak_torque: { hip_1: 0.8, ankle_2: 1.2 } },
-    { version_id: "v4", peak_torque: { hip_1: 5 } },
-    { version_id: "v5", peak_torque: { hip_1: 5 } },
-    { version_id: "v2", peak_torque: {} },
+    { version_id: "v2", peak_torque: { hip_1: 0.8 }, sanity: { pass: true } },
+    { version_id: "v3", peak_torque: { hip_1: 0.8, ankle_2: 1.2 }, sanity: { pass: false } },
+    { version_id: "v2", peak_torque: { hip_1: 1.01 }, sanity: { pass: true } },
+    { version_id: "v4", peak_torque: { hip_1: 5 }, sanity: { pass: true } },
+    { version_id: "v0", peak_torque: { hip_1: 1.0 }, sanity: { pass: true } },
+    { version_id: "v0", peak_torque: {}, sanity: null },
+    { version_id: "v0" },
   ];
-  assert.equal(acceptedOverRated(edits, runs), 1);
-  assert.equal(acceptedOverRated(edits, []), 0);
+  assert.deepEqual(gaitCounter(runs, cli), { overrated_gaits: 2, passed_physics: 1 });
+  assert.deepEqual(gaitCounter(runs), { overrated_gaits: 3, passed_physics: 2 });
+  assert.deepEqual(gaitCounter([]), { overrated_gaits: 0, passed_physics: 0 });
 });
 
 test("counter line wording", () => {
-  assert.equal(counterLine({ overrated: 7, accepted: 0 }), "over-rated attempts today: 7 · accepted: 0");
+  assert.equal(counterLine({ overrated_gaits: 7, passed_physics: 0 }), "over-rated gaits: 7 · passed the physics check: 0");
 });
 
 test("?cheatfixture= reads a fixture file by a safe name; anything else reads api/cheat", () => {
@@ -151,17 +157,18 @@ test("the fixture: marked, on the flail frames id, a card with a quote and an ov
   assert.equal(isOverratedReject({ verdict: "rejected", origin: "model", reason: doc.card.reason, frames_id: doc.card.frames_id }), true);
   assert.ok(doc.card.quote && doc.card.quote.length <= QUOTE_MAX);
   assert.ok(overTorqueJoint(doc.card.peak_torque));
-  assert.equal(counterLine(doc.counter), "over-rated attempts today: 1 · accepted: 0");
+  assert.equal(counterLine(doc.counter), "over-rated gaits: 22 · passed the physics check: 0");
   assert.ok(Object.keys(doc.spine.models).length > 0);
 });
 
 test("parseCheat keeps a null card, drops a bad frames id, and rejects a malformed counter", () => {
-  const ok = { card: null, counter: { overrated: 0, accepted: 0, source: "count" }, spine: { models: {}, rewrite_cost_usd: null, edits: [] } };
+  const ok = { card: null, counter: { overrated_gaits: 0, passed_physics: 0 }, spine: { models: {}, rewrite_cost_usd: null, edits: [] } };
   assert.deepEqual(parseCheat(ok), { fixture: false, ...ok });
   const badFrames = { ...ok, card: { ...fixture.card, frames_id: "../etc" } };
   assert.equal(parseCheat(badFrames)?.card, null);
-  assert.equal(parseCheat({ ...ok, counter: { overrated: -1, accepted: 0, source: "count" } }), null);
-  assert.equal(parseCheat({ ...ok, counter: { overrated: 1, accepted: 0, source: "typed" } }), null);
+  assert.equal(parseCheat({ ...ok, counter: { overrated_gaits: -1, passed_physics: 0 } }), null);
+  assert.equal(parseCheat({ ...ok, counter: { overrated_gaits: 1, passed_physics: 2 } }), null);
+  assert.equal(parseCheat({ ...ok, counter: { overrated: 1, accepted: 0, source: "count" } }), null);
   assert.equal(parseCheat({ ...ok, spine: { models: {} } }), null);
   assert.equal(parseCheat(null), null);
   const emptyQuote = parseCheat({ ...ok, card: { ...fixture.card, quote: "  " } });

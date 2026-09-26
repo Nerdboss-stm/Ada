@@ -1,6 +1,6 @@
 {
   "fixture": true,
-  "_note": "fixture: hand-written for the cheat card until a rejected over-rated edit has frames with a violation_frame. frames_id is the real flail frames document (run fixture-flail, violation frame 19). rationale and reason are copied word for word from edit r-20260926T163653-41e812.e0; the quote and peak_torque are made up (that run's trace has no assistant words and no peak_torque). spine.models and spine.edits are copied from today's runs and edits; rewrite_cost_usd is made up. counter matches today's count.",
+  "_note": "fixture: hand-written for the cheat card until a rejected over-rated edit has frames with a violation_frame. frames_id is the real flail frames document (run fixture-flail, violation frame 19). rationale and reason are copied word for word from edit r-20260926T163653-41e812.e0; the quote and peak_torque are made up (that run's trace has no assistant words and no peak_torque). spine.models and spine.edits are copied from today's runs and edits; rewrite_cost_usd is made up. counter matches the count over every non-cli run in ada at C9 (22 over-rated gaits, 0 passed the physics check).",
   "card": {
     "edit_id": "fixture-cheat",
     "rationale": "More attempts allow iteration with preview feedback to find a valid, farther-moving gait.",
@@ -19,7 +19,7 @@
     },
     "model_id": "openai/gpt-6-luna"
   },
-  "counter": { "overrated": 1, "accepted": 0, "source": "count" },
+  "counter": { "overrated_gaits": 22, "passed_physics": 0 },
   "spine": {
     "models": {
       "v0": ["openai/gpt-6-luna"],

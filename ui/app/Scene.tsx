@@ -1,6 +1,18 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  Suspense,
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Lightformer, Text } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping } from "@react-three/postprocessing";
@@ -135,11 +147,46 @@ export function useManifest(): { manifest: Manifest | null; error: string | null
   return { manifest, error };
 }
 
-/**
- * SPEC §6 "Scene", shared by every mode. `zUp` goes inside the MuJoCo z-up group (recorded
- * poses); `children` go in three's y-up world (cameras, Html anchored to torsos).
- */
-export function Scene({ zUp, children }: { zUp: ReactNode; children: ReactNode }) {
+/** What a scene draws: `zUp` inside the MuJoCo z-up group, `children` in three's y-up world. */
+type SceneContent = { zUp: ReactNode; children: ReactNode };
+
+/** Drawn content plus a key per registering scene, so a new scene remounts instead of inheriting state. */
+type SlotContent = SceneContent & { key: number };
+
+/** The one scene a shared canvas draws; the newest registration wins, and only its owner may clear it. */
+type SceneSlot = {
+  get(): SlotContent | null;
+  set(owner: object, content: SlotContent | null): void;
+  subscribe(listener: () => void): () => void;
+};
+
+function createSceneSlot(): SceneSlot {
+  let owner: object | null = null;
+  let content: SlotContent | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => content,
+    set(who, next) {
+      if (next === null && owner !== who) return;
+      owner = next === null ? null : who;
+      content = next;
+      listeners.forEach((l) => l());
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+const SharedSlot = createContext<SceneSlot | null>(null);
+
+/** True under <SharedCanvas>: the stage root should stay transparent so the shared canvas shows. */
+export function useSharedCanvas(): boolean {
+  return useContext(SharedSlot) !== null;
+}
+
+function StageCanvas({ zUp, children }: SceneContent) {
   return (
     <Canvas
       shadows="percentage"
@@ -163,4 +210,59 @@ export function Scene({ zUp, children }: { zUp: ReactNode; children: ReactNode }
       <Post />
     </Canvas>
   );
+}
+
+function SlotZUp({ slot }: { slot: SceneSlot }) {
+  const c = useSyncExternalStore(slot.subscribe, slot.get, slot.get);
+  return c ? <Fragment key={c.key}>{c.zUp}</Fragment> : null;
+}
+
+function SlotChildren({ slot }: { slot: SceneSlot }) {
+  const c = useSyncExternalStore(slot.subscribe, slot.get, slot.get);
+  return c ? <Fragment key={c.key}>{c.children}</Fragment> : null;
+}
+
+/**
+ * The C9 director's one canvas: every <Scene> below it draws here instead of creating its own, so
+ * a key switch swaps what is drawn without tearing down the WebGL context or recompiling shaders.
+ * Only the drawn content goes through the slot, so a scene's re-render never re-renders the director.
+ */
+export function SharedCanvas({ children }: { children: ReactNode }) {
+  const slot = useMemo(() => createSceneSlot(), []);
+  return (
+    <SharedSlot.Provider value={slot}>
+      <div className="absolute inset-0">
+        <StageCanvas zUp={<SlotZUp slot={slot} />}>
+          <SlotChildren slot={slot} />
+        </StageCanvas>
+      </div>
+      {children}
+    </SharedSlot.Provider>
+  );
+}
+
+let nextSlotKey = 0;
+
+function SlotScene({ slot, zUp, children }: SceneContent & { slot: SceneSlot }) {
+  const owner = useRef<{ key: number } | null>(null);
+  owner.current ??= { key: ++nextSlotKey };
+  useLayoutEffect(() => {
+    const me = owner.current as { key: number };
+    slot.set(me, { zUp, children, key: me.key });
+  }, [slot, zUp, children]);
+  useLayoutEffect(() => {
+    const me = owner.current as { key: number };
+    return () => slot.set(me, null);
+  }, [slot]);
+  return null;
+}
+
+/**
+ * SPEC §6 "Scene", shared by every mode. `zUp` goes inside the MuJoCo z-up group (recorded
+ * poses); `children` go in three's y-up world (cameras, Html anchored to torsos). Under
+ * <SharedCanvas> it draws into that canvas; otherwise it is its own canvas.
+ */
+export function Scene({ zUp, children }: { zUp: ReactNode; children?: ReactNode }) {
+  const slot = useContext(SharedSlot);
+  return slot ? <SlotScene slot={slot} zUp={zUp}>{children}</SlotScene> : <StageCanvas zUp={zUp}>{children}</StageCanvas>;
 }

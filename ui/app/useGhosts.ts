@@ -25,10 +25,21 @@ export type Cheat = { key: string; doc: FramesDoc & { violation_frame: number };
 
 export type GhostState = { ghosts: Ghost[]; leader: string | null; cheat: Cheat | null; error: string | null };
 
-export async function fetchFrames(url: string): Promise<FramesDoc> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`frames ${url}: ${res.status}`);
-  return (await res.json()) as FramesDoc;
+// Frames documents never change once recorded: one request per URL per page load, so a scene
+// switch (C9 director) reuses what an earlier scene or the prefetch already loaded.
+const framesCache = new Map<string, Promise<FramesDoc>>();
+
+export function fetchFrames(url: string): Promise<FramesDoc> {
+  let pending = framesCache.get(url);
+  if (!pending) {
+    pending = fetch(url).then(async (res) => {
+      if (!res.ok) throw new Error(`frames ${url}: ${res.status}`);
+      return (await res.json()) as FramesDoc;
+    });
+    pending.catch(() => framesCache.delete(url));
+    framesCache.set(url, pending);
+  }
+  return pending;
 }
 
 function asCheat(key: string, doc: FramesDoc, reason: string | null | undefined, hotJoint: string | null = null): Cheat | null {
@@ -38,7 +49,7 @@ function asCheat(key: string, doc: FramesDoc, reason: string | null | undefined,
 }
 
 /** Which rejected run plays as the cheat, and what it says. */
-type CheatTarget = { framesId: string; reason: string | null | undefined; hotJoint: string | null };
+export type CheatTarget = { framesId: string; reason: string | null | undefined; hotJoint: string | null };
 
 /**
  * `?fixtures=` files and `?frames=` documents, in query order; leader by recorded final torso x.
@@ -66,7 +77,7 @@ function useLocalGhosts(sources: { name: string; url: string }[] | null): GhostS
 }
 
 /** The target's frames, if they are a cheat; verdict is the target's reason. */
-function useTargetCheat(target: CheatTarget | null): { cheat: Cheat | null; error: string | null } {
+export function useTargetCheat(target: CheatTarget | null): { cheat: Cheat | null; error: string | null } {
   const framesId = target?.framesId ?? null;
   const [loaded, setLoaded] = useState<{ id: string; doc: FramesDoc } | null>(null);
   const [error, setError] = useState<string | null>(null);

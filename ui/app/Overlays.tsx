@@ -2,7 +2,7 @@
 
 import { useMemo, type CSSProperties, type RefObject } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import type { CheatSpine } from "@/lib/cheatcard";
+import { counterLine, type CheatCounter, type CheatSpine } from "@/lib/cheatcard";
 import type { VersionDoc } from "@/lib/ghosts";
 import {
   claim,
@@ -117,15 +117,36 @@ function EditCard({ edit, events }: { edit: EditDoc | null; events: AdaEvent[] }
   );
 }
 
-function RowLine({ label, row, model, color }: { label: string; row: Row | null; model: string; color: string }) {
+// Below 800 px the table stacks: no header, each row's label on its own line, its values wrapped under it.
+const TR_STACK = "max-[800px]:flex max-[800px]:flex-wrap max-[800px]:gap-x-3 max-[800px]:pb-2";
+const TD_LABEL = "pr-4 max-[800px]:w-full max-[800px]:pr-0 max-[800px]:font-medium";
+const TD = "pr-4 max-[800px]:pr-0";
+
+function RowLine({
+  label,
+  row,
+  model,
+  color,
+  emphasized = false,
+}: {
+  label: string;
+  row: Row | null;
+  model: string;
+  color: string;
+  emphasized?: boolean;
+}) {
   return (
-    <tr style={{ color }}>
-      <td className="pr-4">{label}</td>
-      <td className="pr-4" data-testid="spine-model">
+    <tr
+      style={{ color, outline: emphasized ? `1px solid ${INK}` : undefined, outlineOffset: 4 }}
+      className={`${TR_STACK} ${emphasized ? "font-semibold" : ""}`}
+      data-emphasized={emphasized || undefined}
+    >
+      <td className={TD_LABEL}>{label}</td>
+      <td className={TD} data-testid="spine-model">
         {row ? model : "–"}
       </td>
-      <td className="pr-4 text-right">{row ? row.holdout : "–"}</td>
-      <td className="pr-4 text-right">{row ? `n ${row.n}` : "–"}</td>
+      <td className={`${TD} text-right`}>{row ? row.holdout : "–"}</td>
+      <td className={`${TD} text-right`}>{row ? `n ${row.n}` : "–"}</td>
       <td className="text-right">{row ? `${row.cost} per gait` : "–"}</td>
     </tr>
   );
@@ -133,18 +154,53 @@ function RowLine({ label, row, model, color }: { label: string; row: Row | null;
 
 const NO_MODELS: Record<string, string[]> = {};
 
-function Spine({ versions, edits, spine }: { versions: VersionDoc[]; edits: EditDoc[]; spine: CheatSpine | null }) {
-  const frontier = useMemo(() => toRow(pickFrontier(versions)), [versions]);
-  const best = useMemo(() => toRow(pickBest(versions)), [versions]);
-  const counts = useMemo(() => (spine ? editCounts(spine.edits, edits) : null), [spine, edits]);
+/** The pinned scenes (C9): the rows the snapshot names instead of the streamed versions. */
+export type PinnedRows = {
+  frontier: VersionDoc | null;
+  best: VersionDoc | null;
+  /** Scene 6 adds harness v0 as the first row. */
+  v0?: VersionDoc | null;
+  rewrite_cost_usd: number | null;
+};
+
+/**
+ * The spine: frontier and best rows (holdout, runs, cost per gait from metrics.cost_per_run_usd),
+ * the rewrite cost, the live edit counts, and the claim when it is earned. `pinned` replaces the
+ * streamed versions (C9); `emphasize` outlines the frontier row; `counter` adds the live cheat
+ * counter line; `showCounts` false drops the edit counts; `className` replaces the corner placement.
+ */
+export function Spine({
+  versions,
+  edits,
+  spine,
+  pinned,
+  emphasize,
+  counter,
+  showCounts = true,
+  className = "absolute right-6 top-5",
+}: {
+  versions: VersionDoc[];
+  edits: EditDoc[];
+  spine: CheatSpine | null;
+  pinned?: PinnedRows;
+  emphasize?: "frontier";
+  counter?: CheatCounter | null;
+  showCounts?: boolean;
+  className?: string;
+}) {
+  const frontier = useMemo(() => toRow(pinned ? pinned.frontier : pickFrontier(versions)), [pinned, versions]);
+  const best = useMemo(() => toRow(pinned ? pinned.best : pickBest(versions)), [pinned, versions]);
+  const v0 = useMemo(() => (pinned?.v0 ? toRow(pinned.v0) : null), [pinned]);
+  const counts = useMemo(() => (spine && showCounts ? editCounts(spine.edits, edits) : null), [spine, edits, showCounts]);
   if (!frontier && !best) return null;
   const earned = claim(frontier, best);
   const models = spine?.models ?? NO_MODELS;
-  const rewrite = formatUsd(spine?.rewrite_cost_usd);
+  const rewrite = formatUsd(pinned ? pinned.rewrite_cost_usd : spine?.rewrite_cost_usd);
+  const dim = emphasize ? MUTED : undefined;
   return (
-    <section className={`absolute right-6 top-5 px-4 py-3 text-base tabular-nums ${glass}`} data-testid="spine">
-      <table>
-        <thead>
+    <section className={`${className} px-4 py-3 text-base tabular-nums max-[800px]:text-sm ${glass}`} data-testid="spine">
+      <table className="max-[800px]:block">
+        <thead className="max-[800px]:hidden">
           <tr className="text-xs" style={{ color: MUTED }}>
             <th className="pr-4 text-left font-normal">version</th>
             <th className="pr-4 text-left font-normal">agent model</th>
@@ -153,20 +209,28 @@ function Spine({ versions, edits, spine }: { versions: VersionDoc[]; edits: Edit
             <th className="text-right font-normal">cost per gait</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="max-[800px]:block">
+          {v0 && <RowLine label={`harness ${v0.versionId}`} row={v0} model={modelLabel(models, v0.versionId)} color={dim ?? MUTED} />}
           <RowLine
             label={frontier ? `frontier ${frontier.versionId} · frozen` : "frontier · none"}
             row={frontier}
             model={frontier ? modelLabel(models, frontier.versionId) : "–"}
-            color={FROZEN}
+            color={emphasize === "frontier" ? INK : FROZEN}
+            emphasized={emphasize === "frontier"}
           />
-          <RowLine label={best ? `best ${best.versionId}` : "best · none"} row={best} model={best ? modelLabel(models, best.versionId) : "–"} color={INK} />
+          <RowLine
+            label={best ? `best ${best.versionId}` : "best · none"}
+            row={best}
+            model={best ? modelLabel(models, best.versionId) : "–"}
+            color={dim ?? INK}
+          />
         </tbody>
       </table>
-      {(rewrite || counts) && (
+      {(rewrite || counts || counter) && (
         <div className="mt-2 flex flex-wrap gap-x-4 text-sm" style={{ color: MUTED }}>
           {rewrite && <span data-testid="rewrite-cost">rewrite cost {rewrite}</span>}
           {counts && <span data-testid="edit-counts">{countsLine(counts)}</span>}
+          {counter && <span data-testid="gait-counter">{counterLine(counter)}</span>}
         </div>
       )}
       {earned && (

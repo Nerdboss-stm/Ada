@@ -10,7 +10,7 @@ const MUTED = "#8a909b";
 /**
  * The cheat card (C8), shown with bullet time (CheatCardDriver toggles `cardRef` and `reasonRef`):
  * the edit's rationale word for word in Plex Serif, the agent's own words from the rejected run's
- * trace, the verifier reason word for word at 36 pt, and the counted over-rated attempts.
+ * trace, the verifier reason word for word at 36 pt, and the counted over-rated gaits.
  */
 export default function CheatCard({
   card,
@@ -20,7 +20,8 @@ export default function CheatCard({
   reasonRef,
 }: {
   card: Card;
-  counter: CheatCounter;
+  /** The live gait counter; null until api/cheat answers. */
+  counter: CheatCounter | null;
   fixture: boolean;
   cardRef: RefObject<HTMLElement | null>;
   reasonRef: RefObject<HTMLElement | null>;
@@ -29,7 +30,7 @@ export default function CheatCard({
     <section
       ref={cardRef}
       data-testid="cheat-card"
-      className="pointer-events-none absolute right-6 top-1/2 w-[min(560px,calc(100vw-3rem))] -translate-y-1/2 rounded-xl border bg-[#05060a]/70 p-5 font-sans backdrop-blur-md"
+      className="pointer-events-none absolute right-6 top-1/2 w-[min(560px,calc(100vw-3rem))] -translate-y-1/2 rounded-xl border bg-[#05060a]/70 p-5 font-sans backdrop-blur-md max-[800px]:inset-x-4 max-[800px]:bottom-4 max-[800px]:top-auto max-[800px]:w-auto max-[800px]:translate-y-0 max-[800px]:p-4"
       style={{ visibility: "hidden", borderColor: `${CHEAT_RED}66`, color: INK }}
     >
       <header className="flex items-baseline justify-between gap-3 text-xs" style={{ color: MUTED }}>
@@ -56,14 +57,17 @@ export default function CheatCard({
       <p
         ref={reasonRef as RefObject<HTMLParagraphElement | null>}
         data-testid="cheat-reason"
-        className="mt-4 font-semibold leading-tight"
-        style={{ visibility: "hidden", color: CHEAT_RED, fontSize: "36pt" }}
+        // 36 pt; smaller on a phone so the card fits one column.
+        className="mt-4 text-[48px] font-semibold leading-tight max-[800px]:text-[28px]"
+        style={{ visibility: "hidden", color: CHEAT_RED }}
       >
         {card.reason}
       </p>
-      <p className="mt-4 text-sm tabular-nums" style={{ color: MUTED }} data-testid="cheat-counter">
-        {counterLine(counter)}
-      </p>
+      {counter && (
+        <p className="mt-4 text-sm tabular-nums" style={{ color: MUTED }} data-testid="cheat-counter">
+          {counterLine(counter)}
+        </p>
+      )}
     </section>
   );
 }

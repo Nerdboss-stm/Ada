@@ -18,7 +18,7 @@ import {
 } from "@/lib/swap";
 import { Footprints } from "./Footprints";
 import { ADA, Body, playbackTime, useGeometries, type Epoch } from "./Ghosts";
-import { BG, Scene, useManifest } from "./Scene";
+import { BG, Scene, useManifest, useSharedCanvas } from "./Scene";
 import { SoundCues } from "./SoundCues";
 import { fetchFrames, type Ghost } from "./useGhosts";
 
@@ -37,18 +37,27 @@ type SwapState =
   | { status: "error"; message: string }
   | { status: "ready"; swap: SwapDoc; left: FramesDoc; right: FramesDoc };
 
-/** The newest swaps document (or `?swapfixture=`), then both recorded runs it names. */
-function useSwap(): SwapState {
+/**
+ * The newest swaps document (or `?swapfixture=`), then both recorded runs it names. `pinned`
+ * (C9 director) is the snapshot's swap instead: null means the pin names none.
+ */
+function useSwap(pinned: SwapDoc | null | undefined): SwapState {
   const [state, setState] = useState<SwapState>({ status: "loading" });
   useEffect(() => {
     let live = true;
     const url = swapSourceUrl(window.location.search);
     (async () => {
-      const res = await fetch(url);
-      if (res.status === 404 && url.startsWith("/api/")) return live && setState({ status: "waiting" });
-      if (!res.ok) throw new Error(`swap ${url}: ${res.status}`);
-      const swap = parseSwap(await res.json());
-      if (!swap) throw new Error(`swap ${url}: missing or malformed fields`);
+      let swap: SwapDoc | null;
+      if (pinned !== undefined) {
+        if (pinned === null) return live && setState({ status: "waiting" });
+        swap = pinned;
+      } else {
+        const res = await fetch(url);
+        if (res.status === 404 && url.startsWith("/api/")) return live && setState({ status: "waiting" });
+        if (!res.ok) throw new Error(`swap ${url}: ${res.status}`);
+        swap = parseSwap(await res.json());
+        if (!swap) throw new Error(`swap ${url}: missing or malformed fields`);
+      }
       const [left, right] = await Promise.all([
         fetchFrames(`/api/frames/${encodeURIComponent(swap.left_frames_id)}`),
         fetchFrames(`/api/frames/${encodeURIComponent(swap.right_frames_id)}`),
@@ -58,7 +67,7 @@ function useSwap(): SwapState {
     return () => {
       live = false;
     };
-  }, []);
+  }, [pinned]);
   return state;
 }
 
@@ -117,10 +126,10 @@ function SwapOverlay({ swap }: { swap: SwapDoc }) {
   return (
     <div className="pointer-events-none absolute inset-0 font-sans" style={{ color: INK }}>
       <header className="absolute inset-x-0 top-5 flex flex-col items-center px-4 text-center">
-        <h1 data-testid="swap-headline" className="font-semibold leading-none tabular-nums" style={{ fontSize: "72pt" }}>
+        <h1 data-testid="swap-headline" className="text-[96px] font-semibold leading-none tabular-nums max-[800px]:text-[44px]">
           {swapHeadline(swap)}
         </h1>
-        <p data-testid="swap-subline" className="mt-3" style={{ fontSize: "24pt", color: MUTED }}>
+        <p data-testid="swap-subline" className="mt-3 text-[32px] max-[800px]:text-[20px]" style={{ color: MUTED }}>
           {swapSubline(swap.captured_at)}
         </p>
         {swap.fixture && (
@@ -131,9 +140,9 @@ function SwapOverlay({ swap }: { swap: SwapDoc }) {
       </header>
       <section
         data-testid="swap-diff"
-        className={`pointer-events-auto absolute bottom-5 left-1/2 w-[min(780px,calc(100vw-2rem))] -translate-x-1/2 px-5 py-4 text-sm ${glass}`}
+        className={`pointer-events-auto absolute bottom-5 left-1/2 w-[min(780px,calc(100vw-2rem))] -translate-x-1/2 px-5 py-4 text-sm max-[800px]:bottom-4 max-[800px]:px-3 max-[800px]:text-xs ${glass}`}
       >
-        <div className="grid grid-cols-[8rem_1fr_1fr_5.5rem] gap-x-4 gap-y-1.5">
+        <div className="grid grid-cols-[8rem_1fr_1fr_5.5rem] gap-x-4 gap-y-1.5 max-[800px]:grid-cols-[5.5rem_1fr_1fr_4.5rem] max-[800px]:gap-x-2">
           <span />
           <span className="text-xs" style={{ color: MUTED }}>
             left · {swap.left_version}
@@ -186,10 +195,14 @@ function SwapOverlay({ swap }: { swap: SwapDoc }) {
   );
 }
 
-/** `?mode=swap`: same model, same holdout task; harness v0 left, the best harness right. */
-export default function SwapStage() {
+/**
+ * `?mode=swap`: same model, same holdout task; harness v0 left, the best harness right. The C9
+ * director passes the pinned swap (null when the pin names none); otherwise the newest is read.
+ */
+export default function SwapStage({ pinned }: { pinned?: SwapDoc | null } = {}) {
   const { manifest, error: manifestError } = useManifest();
-  const state = useSwap();
+  const state = useSwap(pinned);
+  const shared = useSharedCanvas();
   const epoch = useRef<number | null>(null);
 
   const lanes = useMemo<Lane[]>(() => {
@@ -206,7 +219,7 @@ export default function SwapStage() {
     manifestError ?? (state.status === "error" ? state.message : null) ?? (mismatch ? "swap frames skipped: manifest_version mismatch" : null);
 
   return (
-    <div className="relative h-dvh w-full" style={{ background: BG }}>
+    <div className="relative h-full w-full" style={shared ? undefined : { background: BG }}>
       <Scene zUp={show && <SwapBodies manifest={manifest} lanes={lanes} cycle={cycle} epoch={epoch} />}>
         {show && <SwapCamera lanes={lanes} cycle={cycle} epoch={epoch} />}
         {/* No ghosts and no cheat in the swap: steps follow the best harness (right lane). */}
