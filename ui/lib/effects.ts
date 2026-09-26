@@ -42,15 +42,26 @@ export function glowIntensity(force: number | undefined): number {
 /** A contact rising edge: frame `frame` is the first touching frame; x, y are that ankle geom's recorded position. */
 export type FootprintEdge = { frame: number; leg: number; x: number; y: number };
 
-/** Every contact false -> true between frames k-1 and k, in frame order. Frame 0 is never an edge. */
-export function footprintEdges(doc: Pick<FramesDoc, "frames">, manifest: Manifest): FootprintEdge[] {
+/** Contact chatter: a rising edge this soon after the same foot's previous rising edge is ignored. */
+export const CHATTER_S = 0.15;
+
+/**
+ * Every contact false -> true between frames k-1 and k, in frame order. Frame 0 is never an edge.
+ * A rising edge less than CHATTER_S after the previous rising edge of the same foot (kept or
+ * ignored) is contact chatter, not a new step, and leaves no footprint.
+ */
+export function footprintEdges(doc: Pick<FramesDoc, "frames" | "fps">, manifest: Manifest): FootprintEdge[] {
   const geomOfLeg = manifest.contact_geoms.map((name) => manifest.geoms.findIndex((g) => g.name === name));
+  const lastRise = geomOfLeg.map(() => -1);
   const out: FootprintEdge[] = [];
   for (let k = 1; k < doc.frames.length; k++) {
     const prev = doc.frames[k - 1].contacts;
     const cur = doc.frames[k].contacts;
     for (let leg = 0; leg < geomOfLeg.length; leg++) {
       if (!cur[leg] || prev[leg]) continue;
+      const chatter = lastRise[leg] >= 0 && doc.fps > 0 && (k - lastRise[leg]) / doc.fps < CHATTER_S;
+      lastRise[leg] = k;
+      if (chatter) continue;
       const pose = doc.frames[k].geoms[geomOfLeg[leg]];
       if (geomOfLeg[leg] < 0 || !pose) continue;
       out.push({ frame: k, leg, x: pose[0], y: pose[1] });

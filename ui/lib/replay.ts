@@ -21,6 +21,8 @@ export type FramesDoc = {
   fps: number;
   frames: Frame[];
   sha256: string;
+  /** First frame that broke a sanity bound; set only on kind "rejected". */
+  violation_frame?: number | null;
 };
 
 export type ManifestGeom = {

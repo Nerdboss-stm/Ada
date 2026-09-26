@@ -13,10 +13,11 @@ import {
   sharedFrameIndex,
   type Vec3,
 } from "@/lib/ghosts";
+import { cheatState, cheatTorso, orbitCamera, type CheatTimeline } from "@/lib/cheat";
 import { WARM, glowIntensity, legForceIndex } from "@/lib/effects";
 import { formatMeters } from "@/lib/overlays";
 import { geomShape, poseParts, type Manifest } from "@/lib/replay";
-import type { Ghost } from "./useGhosts";
+import type { Cheat, Ghost } from "./useGhosts";
 
 export const ADA = "#c9ced6";
 // Follow cam, three y-up world: behind (-x), above, a little to the side; look slightly ahead.
@@ -32,7 +33,7 @@ export function playbackTime(epoch: Epoch, elapsed: number): number {
   return elapsed - epoch.current;
 }
 
-function useGeometries(manifest: Manifest): THREE.BufferGeometry[] {
+export function useGeometries(manifest: Manifest): THREE.BufferGeometry[] {
   const geometries = useMemo(
     () =>
       manifest.geoms.map((g) => {
@@ -82,27 +83,34 @@ function makeGlowMaterial(): THREE.MeshPhysicalMaterial {
   return m;
 }
 
-/** One recorded run. Poses are raw MuJoCo z-up; the parent group does the only axis rotation. */
-function Body({
+/**
+ * One recorded run. Poses are raw MuJoCo z-up; the parent group does the only axis rotation.
+ * `frameAt` maps shared playback time to the recorded frame shown; `material`, when given,
+ * replaces the ghost/leader material (the cheat's red wireframe).
+ */
+export function Body({
   ghost,
   geometries,
   color,
   leader,
   forceIndex,
-  cycle,
+  frameAt,
   epoch,
+  material: override,
 }: {
   ghost: Ghost;
   geometries: THREE.BufferGeometry[];
   color: string;
   leader: boolean;
   forceIndex: number[];
-  cycle: number;
+  frameAt: (t: number) => number;
   epoch: Epoch;
+  material?: THREE.Material;
 }) {
   const refs = useRef<(THREE.Mesh | null)[]>([]);
-  const material = useMemo(() => makeMaterial(leader, color), [leader, color]);
-  useEffect(() => () => material.dispose(), [material]);
+  const own = useMemo(() => (override ? null : makeMaterial(leader, color)), [override, leader, color]);
+  useEffect(() => () => own?.dispose(), [own]);
+  const material = override ?? (own as THREE.Material);
   // Leader only, never ghosts: one glow material per driven leg geom, null elsewhere.
   const glow = useMemo(
     () => geometries.map((_, k) => (leader && (forceIndex[k] ?? -1) >= 0 ? makeGlowMaterial() : null)),
@@ -111,9 +119,7 @@ function Body({
   useEffect(() => () => glow.forEach((m) => m?.dispose()), [glow]);
 
   useFrame(({ clock }) => {
-    const { doc } = ghost;
-    const i = sharedFrameIndex(playbackTime(epoch, clock.elapsedTime), doc.fps, doc.frames.length, cycle);
-    const frame = doc.frames[i];
+    const frame = ghost.doc.frames[frameAt(playbackTime(epoch, clock.elapsedTime))];
     const geoms = frame?.geoms ?? [];
     for (let g = 0; g < geoms.length; g++) {
       const mesh = refs.current[g];
@@ -144,15 +150,36 @@ function Body({
   );
 }
 
-/** Tracks the leader's torso with lag. The only place mjToThree is applied. */
-function FollowCam({ ghost, cycle, epoch }: { ghost: Ghost; cycle: number; epoch: Epoch }) {
+/** Orbit center lag per 60 Hz frame: bullet time holds each recorded torso for 0.3 s; the camera glides between them. */
+const ORBIT_CENTER_ALPHA = 0.08;
+
+const mix = (a: Vec3, b: Vec3, k: number): Vec3 => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+
+/**
+ * Tracks the leader's torso with lag. During the cheat's bullet time it blends onto an orbit
+ * around the cheat's torso and back (lib/cheat.ts cheatState.camWeight); the leader follow keeps
+ * running underneath, so weight 0 is exactly back on the leader.
+ */
+function FollowCam({
+  ghost,
+  cycle,
+  epoch,
+  cheat,
+}: {
+  ghost: Ghost;
+  cycle: number;
+  epoch: Epoch;
+  cheat: { cheat: Cheat; timeline: CheatTimeline } | null;
+}) {
   const pos = useRef<Vec3 | null>(null);
   const look = useRef<Vec3 | null>(null);
   const lastIndex = useRef(-1);
+  const center = useRef<Vec3 | null>(null);
 
   useFrame(({ camera, clock }, delta) => {
     const { doc } = ghost;
-    const i = sharedFrameIndex(playbackTime(epoch, clock.elapsedTime), doc.fps, doc.frames.length, cycle);
+    const t = playbackTime(epoch, clock.elapsedTime);
+    const i = sharedFrameIndex(t, doc.fps, doc.frames.length, cycle);
     const frame = doc.frames[i];
     if (!frame) return;
     const torso = mjToThree(frame.torso);
@@ -163,8 +190,21 @@ function FollowCam({ ghost, cycle, epoch }: { ghost: Ghost; cycle: number; epoch
     lastIndex.current = i;
     pos.current = cut ? wantPos : followStep(pos.current as Vec3, wantPos, FOLLOW_ALPHA, delta);
     look.current = cut ? wantLook : followStep(look.current as Vec3, wantLook, FOLLOW_ALPHA, delta);
-    camera.position.set(...pos.current);
-    camera.lookAt(...look.current);
+    let camPos = pos.current;
+    let camLook = look.current;
+    const s = cheat ? cheatState(cheat.timeline, t) : null;
+    const cheatAt = s && cheat ? cheat.cheat.doc.frames[s.frame]?.torso : undefined;
+    if (s && cheatAt && s.camWeight > 0) {
+      const want = cheatTorso(cheatAt);
+      center.current = center.current === null ? want : followStep(center.current, want, ORBIT_CENTER_ALPHA, delta);
+      const orbit = orbitCamera(center.current, s.orbit);
+      camPos = mix(camPos, orbit.pos, s.camWeight);
+      camLook = mix(camLook, orbit.look, s.camWeight);
+    } else {
+      center.current = null;
+    }
+    camera.position.set(...camPos);
+    camera.lookAt(...camLook);
   });
   return null;
 }
@@ -197,7 +237,7 @@ export function GhostBodies({
           color={colorOf.get(g.key) ?? ADA}
           leader={g.key === leader}
           forceIndex={forceIndex}
-          cycle={cycle}
+          frameAt={(t) => sharedFrameIndex(t, g.doc.fps, g.doc.frames.length, cycle)}
           epoch={epoch}
         />
       ))}
@@ -237,10 +277,20 @@ export function LeaderReadout({
   return null;
 }
 
-export function GhostCamera({ ghosts, leader, epoch }: { ghosts: Ghost[]; leader: string | null; epoch: Epoch }) {
+export function GhostCamera({
+  ghosts,
+  leader,
+  epoch,
+  cheat,
+}: {
+  ghosts: Ghost[];
+  leader: string | null;
+  epoch: Epoch;
+  cheat: { cheat: Cheat; timeline: CheatTimeline } | null;
+}) {
   const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
   // No solid leader yet: follow the newest ghost.
   const target = ghosts.find((g) => g.key === leader) ?? ghosts[ghosts.length - 1];
-  return target ? <FollowCam ghost={target} cycle={cycle} epoch={epoch} /> : null;
+  return target ? <FollowCam ghost={target} cycle={cycle} epoch={epoch} cheat={cheat} /> : null;
 }
 

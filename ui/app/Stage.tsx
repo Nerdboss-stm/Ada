@@ -6,8 +6,10 @@ import { ContactShadows, Environment, Lightformer, OrbitControls, Text } from "@
 import { Bloom, EffectComposer, ToneMapping } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
+import { cheatTimeline } from "@/lib/cheat";
 import { cycleSeconds } from "@/lib/ghosts";
 import type { Manifest } from "@/lib/replay";
+import { CheatBody, CheatVerdict } from "./Cheat";
 import { Footprints } from "./Footprints";
 import { ADA, GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
 import Overlays from "./Overlays";
@@ -124,7 +126,7 @@ export default function Stage() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const stream = useAdaStream();
-  const { ghosts: loaded, leader, error: ghostError } = useGhosts(stream.versions, stream.error);
+  const { ghosts: loaded, leader, cheat: loadedCheat, error: ghostError } = useGhosts(stream.versions, stream.edits, stream.error);
   const epoch = useRef<number | null>(null);
   const distanceRef = useRef<HTMLSpanElement | null>(null);
   // Written straight to the DOM every recorded frame; React never re-renders for it.
@@ -152,9 +154,16 @@ export default function Stage() {
     () => (manifest ? loaded.filter((g) => g.doc.manifest_version === manifest.manifest_version) : []),
     [loaded, manifest],
   );
+  // The cheat plays on its own clock; the ghosts' shared loop never waits for it.
+  const cheat = useMemo(() => {
+    if (!manifest || !loadedCheat || loadedCheat.doc.manifest_version !== manifest.manifest_version) return null;
+    const { fps, frames, violation_frame } = loadedCheat.doc;
+    const timeline = cheatTimeline(fps, frames.length, violation_frame);
+    return timeline ? { cheat: loadedCheat, timeline } : null;
+  }, [manifest, loadedCheat]);
   const leaderGhost = ghosts.find((g) => g.key === leader);
   const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
-  const mismatched = manifest ? loaded.length - ghosts.length : 0;
+  const mismatched = manifest ? loaded.length - ghosts.length + (loadedCheat && !cheat ? 1 : 0) : 0;
   const error =
     loadError ?? ghostError ?? stream.error ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
 
@@ -178,11 +187,13 @@ export default function Stage() {
           </Suspense>
           {manifest && <GhostBodies manifest={manifest} ghosts={ghosts} leader={leader} epoch={epoch} />}
           {manifest && leaderGhost && <Footprints ghost={leaderGhost} manifest={manifest} cycle={cycle} epoch={epoch} />}
+          {manifest && cheat && <CheatBody manifest={manifest} cheat={cheat.cheat} timeline={cheat.timeline} epoch={epoch} />}
         </group>
+        {cheat && <CheatVerdict cheat={cheat.cheat} timeline={cheat.timeline} epoch={epoch} />}
         {orbit ? (
           <OrbitControls makeDefault target={[1.2, 0.4, -1.5]} enableDamping />
         ) : (
-          <GhostCamera ghosts={ghosts} leader={leader} epoch={epoch} />
+          <GhostCamera ghosts={ghosts} leader={leader} epoch={epoch} cheat={cheat} />
         )}
         <LeaderReadout ghosts={ghosts} leader={leader} epoch={epoch} onText={showDistance} />
         <Post />

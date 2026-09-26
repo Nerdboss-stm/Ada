@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  CHATTER_S,
   FOOTPRINT_FADE_S,
   GLOW_MAX,
   activeFootprints,
@@ -68,13 +69,51 @@ test("footprints are contact rising edges only, at that ankle geom's recorded po
     frame([F, T, T, F], 3), // leg 0 lifts, leg 2 rises
     frame([T, F, T, F], 4), // leg 0 rises again
   ];
-  const edges = footprintEdges({ frames }, manifest);
+  const edges = footprintEdges({ frames, fps: 10 }, manifest);
   const ankle = (leg: number) => at(manifest.contact_geoms[leg]);
   assert.deepEqual(edges, [
     { frame: 1, leg: 1, x: 1 + ankle(1), y: 10 + ankle(1) },
     { frame: 3, leg: 2, x: 3 + ankle(2), y: 10 + ankle(2) },
     { frame: 4, leg: 0, x: 4 + ankle(0), y: 10 + ankle(0) },
   ]);
+});
+
+test("contact chatter: a rising edge under 0.15 s after the same foot's previous rising edge leaves no footprint", () => {
+  const fps = 20; // 0.05 s a frame: 3 frames = 0.15 s, the first gap that counts as a new step
+  assert.equal(CHATTER_S, 0.15);
+  const F = false;
+  const T = true;
+  // Leg 0 contact per frame; legs 1-3 stay down (no edges).
+  const leg0 = [F, T, F, T, F, F, T, F, F, F, F, T, F, T];
+  //            0  1  2  3  4  5  6  7  8  9 10 11 12 13
+  // rises at 1 (kept), 3 (0.10 s after 1: chatter), 6 (0.15 s after 3: kept),
+  // 11 (kept), 13 (0.10 s after 11: chatter)
+  const frames = leg0.map((c, k) => frame([c, T, T, T], k));
+  const edges = footprintEdges({ frames, fps }, manifest);
+  assert.deepEqual(
+    edges.map((e) => [e.frame, e.leg]),
+    [
+      [1, 0],
+      [6, 0],
+      [11, 0],
+    ],
+  );
+  // Chatter is per foot: leg 1 rising right after leg 0 still counts.
+  const both = [
+    frame([F, F, T, T], 0),
+    frame([T, F, T, T], 1),
+    frame([T, T, T, T], 2),
+  ];
+  assert.deepEqual(
+    footprintEdges({ frames: both, fps }, manifest).map((e) => [e.frame, e.leg]),
+    [
+      [1, 0],
+      [2, 1],
+    ],
+  );
+  // A chain of chatter stays one footprint: each ignored edge still resets the clock.
+  const chain = [F, T, F, T, F, T, F, T].map((c, k) => frame([c, T, T, T], k));
+  assert.deepEqual(footprintEdges({ frames: chain, fps }, manifest).map((e) => e.frame), [1]);
 });
 
 test("footprints appear on their frame, fade linearly over 2 s, and clear when the loop restarts", () => {

@@ -22,6 +22,8 @@ export type EditDoc = {
   actual_delta?: number | null;
   verdict?: "accepted" | "rejected" | null;
   reason?: string | null;
+  violation_frame?: number | null;
+  frames_id?: string | null;
   created_at?: string;
 };
 
