@@ -10,14 +10,17 @@ import { GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
 import Overlays from "./Overlays";
 import { BG, Scene, useManifest } from "./Scene";
 import { SoundCues } from "./SoundCues";
+import AttemptsStage from "./Attempts";
 import SwapStage from "./Swap";
 import { useAdaStream } from "./useAdaStream";
 import { useGhosts } from "./useGhosts";
 
-/** One route (SPEC §6): `?mode=swap` is v0 vs the best harness; everything else is the demo. */
+/** One route (SPEC §6): `?mode=swap` is v0 vs the best harness; `?mode=attempts` is the harness's bets; everything else is the demo. */
 export default function Stage() {
   const mode = useMemo(() => new URLSearchParams(window.location.search).get("mode"), []);
-  return mode === "swap" ? <SwapStage /> : <DemoStage />;
+  if (mode === "swap") return <SwapStage />;
+  if (mode === "attempts") return <AttemptsStage />;
+  return <DemoStage />;
 }
 
 function DemoStage() {

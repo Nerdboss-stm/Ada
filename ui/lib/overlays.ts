@@ -13,6 +13,8 @@ export type Cell = { stage: GateStage; state: CellState };
 /** The slice of an `edits` document (CONTRACTS.md §3) the card reads. */
 export type EditDoc = {
   _id: string;
+  from_version?: string;
+  to_version?: string | null;
   origin?: "model" | "probe" | "cli" | string;
   primitive?: string;
   old?: unknown;
@@ -20,6 +22,12 @@ export type EditDoc = {
   rationale?: string;
   predicted_delta?: number | null;
   actual_delta?: number | null;
+  /** The supervisor's bet: change in train mean distance, meters. */
+  predicted_delta_m?: number | null;
+  /** Candidate minus parent train mean distance, meters (NOTES.md [A11]). */
+  actual_delta_m?: number | null;
+  /** The candidate's recorded walk on the first gate terrain (NOTES.md [A11]). */
+  attempt_frames_id?: string | null;
   verdict?: "accepted" | "rejected" | null;
   reason?: string | null;
   violation_frame?: number | null;

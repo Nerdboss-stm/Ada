@@ -63,6 +63,18 @@ test("leader is train-reliability-first among accepted or baseline, distance bre
   assert.equal(pickLeader([{ _id: "v1", status: "rejected", metrics: m(1, 5) }]), null);
 });
 
+test("leader tie-break uses train_mean_distance_m when present, mean_distance_m otherwise", () => {
+  const vs: VersionDoc[] = [
+    { _id: "v1", status: "accepted", metrics: { train_reliability: 0.5, mean_distance_m: 9, train_mean_distance_m: 1 } },
+    { _id: "v2", status: "accepted", metrics: { train_reliability: 0.5, mean_distance_m: 2, train_mean_distance_m: 3 } },
+  ];
+  assert.equal(pickLeader(vs), "v2");
+  // A holdout rewrite of mean_distance_m cannot move the leader.
+  assert.equal(pickLeader([{ ...vs[0], metrics: { ...vs[0].metrics, mean_distance_m: 50 } }, vs[1]]), "v2");
+  // Older versions without the field fall back to mean_distance_m.
+  assert.equal(pickLeader([vs[0], { _id: "v3", status: "accepted", metrics: { train_reliability: 0.5, mean_distance_m: 4 } }]), "v3");
+});
+
 test("leader never looks at holdout: holdout is evidence only", () => {
   const vs: VersionDoc[] = [
     { _id: "v1", status: "accepted", metrics: { train_reliability: 0.9, holdout_reliability_80: 0.1, mean_distance_m: 2 } },

@@ -1,0 +1,120 @@
+{
+  "fixture": true,
+  "_note": "fixture: hand-written for ?mode=attempts until Lane A writes actual_delta_m, attempt_frames_id and metrics.train_mean_distance_m (NOTES.md [A11]). Frames ids are real frames documents; every bet, measured change, train mean and verdict is made up. e1's rationale is copied from edit r-20260926T163653-41e812.e0. Terrains are read from each frames doc's run (fixture-* frames have no run).",
+  "versions": [
+    { "_id": "v0", "status": "baseline", "metrics": { "train_reliability": 0, "train_mean_distance_m": 0.2 } },
+    { "_id": "v1", "status": "rejected", "metrics": { "train_reliability": 0, "train_mean_distance_m": 0.05 } },
+    { "_id": "v2", "status": "accepted", "metrics": { "train_reliability": 0.1667, "train_mean_distance_m": 0.82 } },
+    { "_id": "v3", "status": "rejected", "metrics": { "train_reliability": 0.1667, "train_mean_distance_m": 0.77 } },
+    { "_id": "v4", "status": "accepted", "metrics": { "train_reliability": 0.1667, "train_mean_distance_m": 1.0 } },
+    { "_id": "v5", "status": "accepted", "metrics": { "train_reliability": 0.3333, "train_mean_distance_m": 1.12 } },
+    { "_id": "v6", "status": "accepted", "metrics": { "train_reliability": 0.3333, "train_mean_distance_m": 1.26 } },
+    { "_id": "v7", "status": "accepted", "metrics": { "train_reliability": 0.3333, "train_mean_distance_m": 1.41 } },
+    { "_id": "v8", "status": "rejected", "metrics": { "train_reliability": 0.1667, "train_mean_distance_m": 1.3 } }
+  ],
+  "edits": [
+    {
+      "_id": "fixture.e1",
+      "from_version": "v0",
+      "to_version": "v1",
+      "primitive": "engine",
+      "rationale": "More attempts allow iteration with preview feedback to find a valid, farther-moving gait.",
+      "predicted_delta_m": 1.2,
+      "actual_delta_m": -0.15,
+      "attempt_frames_id": "0626564266f23349a20a7980",
+      "verdict": "rejected",
+      "created_at": "2026-09-26T16:36:53Z"
+    },
+    {
+      "_id": "fixture.e2",
+      "from_version": "v0",
+      "to_version": "v2",
+      "primitive": "tools",
+      "rationale": "Give the agent preview_run so it sees how far a gait carries before it commits to one.",
+      "predicted_delta_m": 0.4,
+      "actual_delta_m": 0.62,
+      "attempt_frames_id": "6b8e6ec9ad5fffd33ba308d1",
+      "verdict": "accepted",
+      "created_at": "2026-09-26T16:37:40Z"
+    },
+    {
+      "_id": "fixture.e3",
+      "from_version": "v2",
+      "to_version": "v3",
+      "primitive": "context_policy",
+      "rationale": "Keep only the last two attempts in context so the newest contact log is not crowded out.",
+      "predicted_delta_m": 0.3,
+      "actual_delta_m": -0.05,
+      "attempt_frames_id": "92267354eb2aa3c7652eaa1c",
+      "verdict": "rejected",
+      "created_at": "2026-09-26T16:39:02Z"
+    },
+    {
+      "_id": "fixture.e4",
+      "from_version": "v2",
+      "to_version": "v4",
+      "primitive": "model_per_step",
+      "rationale": "Plan the gait with the alternate cheap model, which followed the phase rules more closely.",
+      "predicted_delta_m": 0.25,
+      "actual_delta_m": 0.18,
+      "attempt_frames_id": "92267354eb2aa3c7652eaa1c",
+      "verdict": "accepted",
+      "created_at": "2026-09-26T16:40:15Z"
+    },
+    {
+      "_id": "fixture.e5",
+      "from_version": "v4",
+      "to_version": "v5",
+      "primitive": "engine",
+      "rationale": "Allow one more preview before the final submit.",
+      "predicted_delta_m": 0.1,
+      "actual_delta_m": 0.12,
+      "attempt_frames_id": "f5a45893d4ed0094c154a159",
+      "verdict": "accepted",
+      "created_at": "2026-09-26T16:41:30Z"
+    },
+    {
+      "_id": "fixture.e6",
+      "from_version": "v5",
+      "to_version": "v6",
+      "primitive": "rules",
+      "rationale": "Read the contact log after every preview and lengthen the stride only if all four feet touched down.",
+      "predicted_delta_m": 0.2,
+      "actual_delta_m": 0.14,
+      "attempt_frames_id": "5ceaf7462ef2f8687170efb0",
+      "verdict": "accepted",
+      "created_at": "2026-09-26T16:42:48Z"
+    },
+    {
+      "_id": "fixture.e7",
+      "from_version": "v6",
+      "to_version": "v7",
+      "primitive": "tools",
+      "rationale": "Add lookup_skill so earlier gaits on similar slopes can be reused. (fixture: no bet recorded, must be skipped)",
+      "predicted_delta_m": null,
+      "actual_delta_m": 0.15,
+      "attempt_frames_id": "6b8e6ec9ad5fffd33ba308d1",
+      "verdict": "accepted",
+      "created_at": "2026-09-26T16:44:05Z"
+    },
+    {
+      "_id": "fixture.e8",
+      "from_version": "v7",
+      "to_version": "v8",
+      "primitive": "rules",
+      "rationale": "Prefer shorter strides on low friction. (fixture: no attempt walk recorded, must be skipped)",
+      "predicted_delta_m": 0.3,
+      "actual_delta_m": -0.11,
+      "attempt_frames_id": null,
+      "verdict": "rejected",
+      "created_at": "2026-09-26T16:45:20Z"
+    }
+  ],
+  "terrains": {
+    "0626564266f23349a20a7980": { "task_id": "train-s0-f1", "slope_deg": 0, "friction": 1 },
+    "6b8e6ec9ad5fffd33ba308d1": null,
+    "92267354eb2aa3c7652eaa1c": { "task_id": "showcase", "slope_deg": 0, "friction": 1 },
+    "f5a45893d4ed0094c154a159": { "task_id": "showcase", "slope_deg": 0, "friction": 1 },
+    "5ceaf7462ef2f8687170efb0": null
+  }
+}

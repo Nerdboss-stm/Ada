@@ -16,6 +16,8 @@ export type VersionDoc = {
     train_reliability?: number | null;
     holdout_reliability_80?: number | null;
     mean_distance_m?: number | null;
+    /** Train-only mean distance (NOTES.md [A11]); never overwritten by holdout. */
+    train_mean_distance_m?: number | null;
     cost_per_run_usd?: number | null;
     n?: number | null;
   } | null;
@@ -61,8 +63,9 @@ const finite = (x: unknown): x is number => typeof x === "number" && Number.isFi
 /**
  * The leader, which is also the "current best" the claim is about: among accepted or baseline
  * versions with a train reliability, the highest metrics.train_reliability, ties broken by the
- * highest metrics.mean_distance_m, then the oldest. Never chosen by holdout: holdout is
- * evidence only. Null if none.
+ * highest metrics.train_mean_distance_m (NOTES.md [A11]; metrics.mean_distance_m for versions
+ * written before it existed), then the oldest. Never chosen by holdout: holdout is evidence
+ * only. Null if none.
  */
 export function pickLeader(versions: VersionDoc[]): string | null {
   let best: string | null = null;
@@ -72,7 +75,8 @@ export function pickLeader(versions: VersionDoc[]): string | null {
     if (v.status !== "accepted" && v.status !== "baseline") continue;
     const r = v.metrics?.train_reliability;
     if (!finite(r)) continue;
-    const d = finite(v.metrics?.mean_distance_m) ? (v.metrics?.mean_distance_m as number) : -Infinity;
+    const m = v.metrics;
+    const d = finite(m?.train_mean_distance_m) ? m.train_mean_distance_m : finite(m?.mean_distance_m) ? m.mean_distance_m : -Infinity;
     if (r > bestR || (r === bestR && d > bestD)) {
       bestR = r;
       bestD = d;

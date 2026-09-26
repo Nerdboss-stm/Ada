@@ -19,18 +19,21 @@ const PEAK = 6;
 /**
  * SPEC §6 "Footprints", leader only: a flat emissive disc under the ankle geom at each recorded
  * contact rising edge, fading linearly over 2 s of the shared loop clock. Additive, so a fade
- * to black is a fade to nothing. Goes inside the z-up group.
+ * to black is a fade to nothing. Goes inside the z-up group. `recordedTime`, when given, maps
+ * playback time to recorded seconds instead of the shared loop (?mode=attempts: 1× or 4×).
  */
 export function Footprints({
   ghost,
   manifest,
   cycle,
   epoch,
+  recordedTime,
 }: {
   ghost: Ghost;
   manifest: Manifest;
   cycle: number;
   epoch: Epoch;
+  recordedTime?: (t: number) => number;
 }) {
   const mesh = useRef<THREE.InstancedMesh | null>(null);
   const edges = useMemo(() => footprintEdges(ghost.doc, manifest), [ghost, manifest]);
@@ -59,7 +62,7 @@ export function Footprints({
     const im = mesh.current;
     if (!im) return;
     const t = playbackTime(epoch, clock.elapsedTime);
-    const tc = cycle > 0 ? t % cycle : t;
+    const tc = recordedTime ? recordedTime(t) : cycle > 0 ? t % cycle : t;
     const live = activeFootprints(edges, ghost.doc.fps, tc).slice(-MAX_PRINTS);
     for (let k = 0; k < live.length; k++) {
       const { edge, alpha } = live[k];
