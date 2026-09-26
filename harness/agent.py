@@ -3,7 +3,8 @@
     run_episode(task, version_id, harness) -> EpisodeResult
 
 The model node calls core.llm.cached_chat with the role from harness.model_per_step;
-the tool node runs only tools listed in harness.tools. Every submit_gait call counts
+the tool node runs only tools listed in harness.tools, which must be a subset of
+TOOL_WHITELIST (CONTRACTS §6). Previews live in the checkpointed state for one episode. Every submit_gait call counts
 as an attempt; the episode ends on the first valid gait or at engine.max_attempts.
 Each step is stored in `traces.raw_steps` (trace_id = thread id).
 """
@@ -23,12 +24,16 @@ from pydantic import ValidationError
 from core import llm
 from core.contracts import Harness, Task, Trace
 from core.db import ADA, ADA_CKPT, client, db
+from harness import preview
 from sim.gait import Gait, neutral_offsets
 
 SYSTEM_PROMPT = "Write a gait for Ada for this task."
 AGENT_STEP = "agent"  # key of harness.model_per_step used by the model node
 DEFAULT_MAX_ATTEMPTS = 3
 STEPS_PER_ATTEMPT = 6  # recursion budget per attempt (model + tools nodes, with read_task turns)
+TOOL_WHITELIST = (  # CONTRACTS §6, exactly 6; immutable
+    "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts", "lookup_skill",
+)
 
 V0_HARNESS = Harness(
     rules=[],
@@ -42,32 +47,71 @@ V0_HARNESS = Harness(
 # --- tools ------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class ToolCtx:
+    task: Task
+    previews: list[dict[str, Any]]  # this episode's previews, oldest first: {gait, result, contact_log}
+
+
+@dataclass(frozen=True)
+class ToolOut:
+    result: dict[str, Any]
+    gait: Gait | None = None            # a valid submission
+    preview: dict[str, Any] | None = None  # a new preview record
+
+
+@dataclass(frozen=True)
 class ToolDef:
     spec: dict[str, Any]
-    run: Callable[[Task, dict[str, Any]], tuple[dict[str, Any], Gait | None]]
+    run: Callable[[ToolCtx, dict[str, Any]], ToolOut]
     is_attempt: bool
 
 
-def _read_task(task: Task, args: dict[str, Any]) -> tuple[dict[str, Any], Gait | None]:
-    return {
+def _read_task(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    task = ctx.task
+    return ToolOut({
         "slope_deg": task.slope_deg,
         "friction": task.friction,
         "target_m": task.target_m,
         "gait_schema": Gait.model_json_schema(),
         "neutral_offsets": neutral_offsets(),
-    }, None
+    })
 
 
-def _submit_gait(task: Task, args: dict[str, Any]) -> tuple[dict[str, Any], Gait | None]:
+def _submit_gait(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
     try:
         gait = Gait.model_validate(args)
     except ValidationError as e:
-        return {"ok": False, "error": str(e)}, None
-    return {"ok": True}, gait
+        return ToolOut({"ok": False, "error": str(e)})
+    return ToolOut({"ok": True}, gait=gait)
+
+
+def _preview_run(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    try:
+        gait = Gait.model_validate(args)
+    except ValidationError as e:
+        return ToolOut({"ok": False, "error": str(e)})
+    result, log = preview.run_preview(gait, ctx.task)
+    record = {"gait": gait.model_dump(), "result": result, "contact_log": log}
+    return ToolOut({"ok": True, **result}, preview=record)
+
+
+def _get_contact_log(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    if not ctx.previews:
+        return ToolOut({"ok": False, "error": "no preview in this episode yet"})
+    return ToolOut({"ok": True, **ctx.previews[-1]["contact_log"]})
+
+
+def _list_my_attempts(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    return ToolOut({"ok": True, "attempts": [
+        {"n": i, "gait": p["gait"], "preview": p["result"]} for i, p in enumerate(ctx.previews, 1)
+    ]})
 
 
 def _spec(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+
+
+NO_ARGS = {"type": "object", "properties": {}, "additionalProperties": False}
 
 
 TOOLS: dict[str, ToolDef] = {
@@ -75,7 +119,7 @@ TOOLS: dict[str, ToolDef] = {
         spec=_spec(
             "read_task",
             "Read this task: slope, friction, target distance, the gait JSON schema and neutral joint offsets.",
-            {"type": "object", "properties": {}, "additionalProperties": False},
+            NO_ARGS,
         ),
         run=_read_task,
         is_attempt=False,
@@ -89,11 +133,44 @@ TOOLS: dict[str, ToolDef] = {
         run=_submit_gait,
         is_attempt=True,
     ),
+    "preview_run": ToolDef(
+        spec=_spec(
+            "preview_run",
+            f"Try a gait for {preview.PREVIEW_S:.0f} s on a practice run of this task without submitting it. "
+            "Returns distance, whether Ada fell, max torso tilt and each leg's contact rhythm.",
+            Gait.model_json_schema(),
+        ),
+        run=_preview_run,
+        is_attempt=False,
+    ),
+    "get_contact_log": ToolDef(
+        spec=_spec(
+            "get_contact_log",
+            f"Each leg's ground contact during the last preview: share of time in contact "
+            f"in each of {preview.LOG_BINS} equal time bins.",
+            NO_ARGS,
+        ),
+        run=_get_contact_log,
+        is_attempt=False,
+    ),
+    "list_my_attempts": ToolDef(
+        spec=_spec(
+            "list_my_attempts",
+            "The gaits you previewed earlier in this episode, with their preview results.",
+            NO_ARGS,
+        ),
+        run=_list_my_attempts,
+        is_attempt=False,
+    ),
 }
+assert set(TOOLS) <= set(TOOL_WHITELIST)
 
 
 def bound_tools(harness: Harness) -> dict[str, ToolDef]:
-    """The tools this harness binds, in harness order; unknown names are an error."""
+    """The tools this harness binds, in harness order; names off the whitelist or unbuilt are an error."""
+    outside = [n for n in harness.tools if n not in TOOL_WHITELIST]
+    if outside:
+        raise ValueError(f"harness lists tools outside the whitelist: {outside}")
     missing = [n for n in harness.tools if n not in TOOLS]
     if missing:
         raise NotImplementedError(f"harness lists tools with no implementation: {missing}")
@@ -107,6 +184,7 @@ class AgentState(TypedDict):
     steps: Annotated[list[dict[str, Any]], operator.add]
     attempts: int
     gait: dict[str, Any] | None
+    previews: Annotated[list[dict[str, Any]], operator.add]
     cost_usd: float
     tokens: int
     model_id: str | None
@@ -162,7 +240,7 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
 
     def tool_node(state: AgentState) -> dict[str, Any]:
         attempts, gait = state["attempts"], state["gait"]
-        messages, steps = [], []
+        messages, steps, previews = [], [], []
         for call in state["messages"][-1].get("tool_calls") or []:
             name = call.get("function", {}).get("name", "")
             raw_args = call.get("function", {}).get("arguments") or "{}"
@@ -180,9 +258,12 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
                     if not isinstance(args, dict):
                         raise ValueError("arguments must be a JSON object")
                 except ValueError as e:
-                    result, submitted = {"ok": False, "error": f"invalid arguments: {e}"}, None
+                    out = ToolOut({"ok": False, "error": f"invalid arguments: {e}"})
                 else:
-                    result, submitted = tool.run(task, args)
+                    out = tool.run(ToolCtx(task, state["previews"] + previews), args)
+                result, submitted = out.result, out.gait
+                if out.preview is not None:
+                    previews.append(out.preview)
                 if tool.is_attempt:
                     valid = submitted is not None
                     if submitted is not None:
@@ -193,7 +274,7 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
                 "node": "tools", "name": name, "arguments": raw_args if isinstance(raw_args, str)
                 else json.dumps(raw_args), "result": content, "attempt": attempts, "valid": valid,
             })
-        return {"messages": messages, "steps": steps, "attempts": attempts, "gait": gait}
+        return {"messages": messages, "steps": steps, "attempts": attempts, "gait": gait, "previews": previews}
 
     def after_model(state: AgentState) -> str:
         return "tools" if state["messages"][-1].get("tool_calls") else END
@@ -225,7 +306,7 @@ def run_episode(
     system = "\n".join([SYSTEM_PROMPT, *harness.rules])
     initial: AgentState = {
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": f"Task {task.id}."}],
-        "steps": [], "attempts": 0, "gait": None, "cost_usd": 0.0, "tokens": 0, "model_id": None,
+        "steps": [], "attempts": 0, "gait": None, "previews": [], "cost_usd": 0.0, "tokens": 0, "model_id": None,
     }
     config = {"configurable": {"thread_id": tid}, "recursion_limit": STEPS_PER_ATTEMPT * max_attempts(harness)}
     try:

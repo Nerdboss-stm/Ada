@@ -114,6 +114,8 @@ class Edit(_Doc):
     to_version: str | None = None
     origin: EditOrigin
     primitive: str
+    op: str | None = None
+    path: str | None = None
     old: Any = None
     new: Any = None
     rationale: str = ""
@@ -192,8 +194,9 @@ class Skill(_Doc):
 class GuardrailContent(_Doc):
     tool_whitelist: list[str]
     sanity_bounds: dict[str, Any]
+    rated_power: float
     verifier_sha: str
-    compressor_sha: str
+    compressor_sha: str | None = None  # None until compress/ exists
 
 
 class HarnessGuardrails(_Doc):

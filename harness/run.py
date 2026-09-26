@@ -7,6 +7,9 @@ k evaluation seeds, one `runs` document per seed. Then the `versions` document i
 upserted: train writes train_reliability, mean_distance_m, cost_per_run_usd (mean
 cost per episode) and n; holdout writes holdout_reliability_80; showcase records
 frames through sim.record.write_frames and sets showcase_frames_id.
+
+Before the first episode, harness.guardrails.load_guardrails() must pass; on a
+mismatch the run refuses to start.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from core.contracts import Harness, Metrics, Run, Sanity, Split, Task, Version
 from core.db import ADA, ADA_CKPT, db
 from core.events import emit
 from harness.agent import V0_HARNESS, EpisodeResult, run_episode
+from harness.guardrails import GuardrailError, load_guardrails
 
 SPLITS: tuple[Split, ...] = ("train", "holdout", "showcase")
 SUCCESS_SHARE = 0.8  # a task is reliable when at least 80% of its seeds succeed
@@ -141,6 +145,7 @@ def run_split(
         raise ValueError(f"split {split!r}; expected one of {SPLITS}")
     if k < 1:
         raise ValueError("k must be >= 1")
+    load_guardrails(db_name)  # raises GuardrailError: the run refuses to start
     harness = harness or load_harness(version_id, db_name)
     tasks = tasks if tasks is not None else load_tasks(split, db_name)
     db(db_name).runs.delete_many({"version_id": version_id, "split": split})  # reruns replace
@@ -156,7 +161,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", required=True, choices=SPLITS)
     parser.add_argument("--k", type=int, default=2)
     args = parser.parse_args(argv)
-    version = run_split(args.version, args.split, args.k)
+    try:
+        version = run_split(args.version, args.split, args.k)
+    except GuardrailError as e:
+        print(f"refusing to start: {e}", file=sys.stderr)
+        return 2
     print(json.dumps(version.model_dump(by_alias=True, mode="json"), indent=2))
     return 0
 

@@ -75,7 +75,14 @@ SAMPLES: list[BaseModel] = [
         "_id": "cd" * 32,
         "content": {
             "tool_whitelist": ["read_task", "submit_gait"], "sanity_bounds": {"max_speed": 3.0},
-            "verifier_sha": "11" * 32, "compressor_sha": "22" * 32,
+            "rated_power": 1.0, "verifier_sha": "11" * 32, "compressor_sha": "22" * 32,
+        },
+    }),
+    c.HarnessGuardrails.model_validate({
+        "_id": "ef" * 32,
+        "content": {
+            "tool_whitelist": ["read_task"], "sanity_bounds": {}, "rated_power": 1.0,
+            "verifier_sha": "11" * 32,
         },
     }),
 ]

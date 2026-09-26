@@ -8,11 +8,12 @@ from core import llm
 from core.contracts import ChatResult, Harness
 from core.db import ADA_TEST, db
 from harness import agent
+from harness.guardrails import seed_guardrails
 from harness.run import run_split
 from sim.gait import neutral_offsets
 from sim.tasks import build_tasks
 
-COLLECTIONS = ("runs", "versions", "traces", "events", "checkpoints", "checkpoint_writes")
+COLLECTIONS = ("runs", "versions", "traces", "events", "checkpoints", "checkpoint_writes", "harness_guardrails")
 CALL_COST = 0.001
 
 
@@ -61,6 +62,7 @@ def env(monkeypatch):
     database = db(ADA_TEST)
     for c in COLLECTIONS:
         database[c].drop()
+    seed_guardrails(ADA_TEST)
 
     evaluated, written = [], []
 
