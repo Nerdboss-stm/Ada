@@ -10,9 +10,12 @@ without them the stage fails before any episode runs.
 The six episodes and their evaluations run in parallel (MAX_WORKERS threads); results,
 `runs` documents and every decision below follow task order, as if run one by one.
 
-The first sanity violation in task order stops the rollout and fails the stage with the
-verifier's reason word for word; that run is re-evaluated with record=True and its frames
-written through sim.record.write_frames (kind "rejected", with violation_frame).
+Judged by rates (NOTES [A14]): every run rolls, and a physics-violating run (sanity.pass
+false) is a failed run that counts as -target_m, walking the target backward, in every mean
+distance, so cheating can never raise a score. The candidate is rejected with the verifier's
+reason word for word only when it has more violating runs than the parent on the same tasks
+and seeds; the first violating run in task order is then re-evaluated with record=True and
+its frames written through sim.record.write_frames (kind "rejected", with violation_frame).
 Next (NOTES [A11] GATE FIX), a candidate that submitted a gait on fewer gate tasks than the
 parent is rejected. Otherwise the stage passes only on strict improvement: candidate
 reliability above the parent's, or equal reliability with mean distance at least
@@ -22,8 +25,8 @@ SUCCESS_SHARE of its seeds succeed; reliability is the mean over tasks.
 Every candidate that rolls, accepted or rejected, is re-evaluated on ATTEMPT_TASK's first
 evaluation seed with record=True (its gate gait, no model call); the frames are written
 with kind "showcase" and returned as attempt_frames_id. train_mean_distance_m is the train
-mean distance only when every gate task got a gait and the rollout was not cut short;
-otherwise None, so a version that never submitted cannot lead on distance.
+mean distance (violations as -target_m) only when every gate task got a gait; otherwise
+None, so a version that never submitted cannot lead on distance.
 """
 
 from __future__ import annotations
@@ -55,31 +58,44 @@ def gate_tasks(db_name: str = ADA) -> list[Task]:
     return [by_id[t] for t in GATE_TASKS]
 
 
+def violated(run: dict[str, Any]) -> bool:
+    """A run that broke a physical bound; runs stored before sanity existed count as passing."""
+    return (run.get("sanity") or {}).get("pass", True) is False
+
+
+def scored_distance(run: dict[str, Any]) -> float:
+    """The run's distance, or -target_m (the target walked backward) when it violated physics."""
+    return -float(run["target_m"]) if violated(run) else float(run["distance_m"])
+
+
 def score(runs_by_task: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    """{reliability, mean_distance_m, n} over per-task lists of run dicts."""
+    """{reliability, mean_distance_m, n, violations} over per-task lists of run dicts; each run
+    carries its task's target_m so a violating run can count as -target_m."""
     runs = [r for rs in runs_by_task.values() for r in rs]
-    oks = [sum(bool(r["success"]) for r in rs) / len(rs) >= SUCCESS_SHARE
+    oks = [sum(bool(r["success"]) and not violated(r) for r in rs) / len(rs) >= SUCCESS_SHARE
            for rs in runs_by_task.values() if rs]
     return {
         "reliability": round(mean(oks), 4) if oks else 0.0,
-        "mean_distance_m": round(mean(float(r["distance_m"]) for r in runs), 4) if runs else 0.0,
+        "mean_distance_m": round(mean(scored_distance(r) for r in runs), 4) if runs else 0.0,
         "n": len(runs),
+        "violations": sum(violated(r) for r in runs),
     }
 
 
 def train_runs(version_id: str, tasks: list[Task], db_name: str = ADA,
                ) -> dict[str, list[dict[str, Any]]] | None:
-    """A version's train runs on these tasks and first K seeds; None if any task has none."""
+    """A version's train runs on these tasks and first K seeds, each with its task's target_m;
+    None if any task has none."""
     runs_by_task: dict[str, list[dict[str, Any]]] = {}
     for task in tasks:
         runs = list(db(db_name).runs.find(
             {"version_id": version_id, "split": "train", "task_id": task.id,
              "seed": {"$in": task.eval_seeds[:K]}},
-            {"success": 1, "distance_m": 1, "gait": 1},
+            {"success": 1, "distance_m": 1, "gait": 1, "sanity": 1},
         ))
         if not runs:
             return None
-        runs_by_task[task.id] = runs
+        runs_by_task[task.id] = [{**r, "target_m": task.target_m} for r in runs]
     return runs_by_task
 
 
@@ -95,8 +111,8 @@ def train_mean_distance(mean_distance_m: float, gaits: int, n_tasks: int = len(G
 
 
 def parent_score(parent: Version, tasks: list[Task], db_name: str = ADA) -> dict[str, Any] | None:
-    """The parent's train numbers on these tasks and first K seeds, plus `gaits`;
-    None if any task has no runs."""
+    """The parent's train numbers (with violations) on these tasks and first K seeds, plus
+    `gaits`; None if any task has no runs."""
     runs_by_task = train_runs(parent.id, tasks, db_name)
     if runs_by_task is None:
         return None
@@ -133,6 +149,12 @@ def _write_recorded(gait, task: Task, seed: int, run_id: str, version_id: str, k
     return frames_id, frame
 
 
+def first_violation(runs_by_task: dict[str, list[dict[str, Any]]]) -> tuple[str, int] | None:
+    """(task_id, seed index) of the first violating run in task order, or None."""
+    return next(((tid, i) for tid, rs in runs_by_task.items() for i, r in enumerate(rs)
+                 if violated(r)), None)
+
+
 def _fmt(s: dict[str, Any]) -> str:
     return f"{s['reliability']:.4f}", f"{s['mean_distance_m']:.2f} m"
 
@@ -155,7 +177,7 @@ def run(parent: Version, candidate: Version, db_name: str = ADA) -> dict[str, An
         "pass": False, "reason": None, "frames_id": None, "violation_frame": None,
         "train": {"reliability": 0.0, "mean_distance_m": 0.0, "cost_per_run_usd": 0.0, "n": 0},
         "parent": None, "trace_ids": [], "gaits": None, "attempt_frames_id": None,
-        "train_mean_distance_m": None, "parent_train_mean_distance_m": None,
+        "train_mean_distance_m": None, "parent_train_mean_distance_m": None, "violations": None,
     }
     par = parent_score(parent, tasks, db_name)
     if par is None:
@@ -188,14 +210,7 @@ def run(parent: Version, candidate: Version, db_name: str = ADA) -> dict[str, An
             run_id = str(db(db_name).runs.insert_one(
                 run_doc.model_dump(by_alias=True, exclude={"id"})).inserted_id)
             run_ids[(task.id, seed)] = run_id
-            runs_by_task[task.id].append(result)
-            if not run_doc.sanity.pass_:
-                out["reason"] = run_doc.sanity.violation
-                out["frames_id"], out["violation_frame"] = _write_recorded(
-                    ep.gait, task, seed, run_id, candidate.id, "rejected", db_name)
-                break
-        if out["reason"] is not None:
-            break
+            runs_by_task[task.id].append({**result, "target_m": task.target_m})
 
     for task, (ep, _) in zip(tasks, rolled):  # attempt frames: every candidate, any verdict
         key = (task.id, task.eval_seeds[0])
@@ -204,10 +219,19 @@ def run(parent: Version, candidate: Version, db_name: str = ADA) -> dict[str, An
                 ep.gait, task, key[1], run_ids[key], candidate.id, "showcase", db_name)
 
     cand = score(runs_by_task)
+    out["violations"] = {"candidate": cand["violations"], "parent": par["violations"]}
     out["train"] = {**cand, "cost_per_run_usd": round(mean(costs), 6) if costs else 0.0}
-    if out["reason"] is None:  # a cut-short rollout's mean covers only some tasks
-        out["train_mean_distance_m"] = train_mean_distance(cand["mean_distance_m"], cand_gaits, len(tasks))
+    out["train_mean_distance_m"] = train_mean_distance(cand["mean_distance_m"], cand_gaits, len(tasks))
+    if cand["violations"] > par["violations"]:
+        task_id, i = first_violation(runs_by_task)
+        task = next(t for t in tasks if t.id == task_id)
+        seed = task.eval_seeds[i]
+        ep = rolled[tasks.index(task)][0]
+        out["reason"] = runs_by_task[task_id][i]["sanity"]["violation"]
+        out["frames_id"], out["violation_frame"] = _write_recorded(
+            ep.gait, task, seed, run_ids[(task_id, seed)], candidate.id, "rejected", db_name)
+    else:
         out["reason"] = (gait_reason(cand_gaits, par["gaits"], len(tasks))
                          or improvement_reason(cand, par))
-        out["pass"] = out["reason"] is None
+    out["pass"] = out["reason"] is None
     return out

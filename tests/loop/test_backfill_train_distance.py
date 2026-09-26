@@ -20,16 +20,17 @@ def world():
     adb = db(ADA_TEST)
     tag = uuid.uuid4().hex[:8]
     tasks = gate_tasks(ADA_TEST)
-    ids = {k: f"t-a11-{tag}-{k}" for k in ("full", "gap", "none")}
+    ids = {k: f"t-a11-{tag}-{k}" for k in ("full", "gap", "none", "viol")}
 
     def version(vid):
         adb.versions.insert_one({"_id": vid, "parent": "v0", "status": "accepted",
                                  "harness": {}, "metrics": dict(METRICS), "created_at": NOW})
 
-    def runs(vid, split, dist, no_gait=()):
+    def runs(vid, split, dist, no_gait=(), violate=()):
         adb.runs.insert_many([
             {"task_id": t.id, "seed": s, "split": split, "version_id": vid, "success": True,
-             "distance_m": dist + i, "gait": {} if t.id in no_gait else {"power": 1.0}}
+             "distance_m": dist + i, "gait": {} if t.id in no_gait else {"power": 1.0},
+             "sanity": {"pass": (t.id, s) not in violate}}
             for i, t in enumerate(tasks) for s in t.eval_seeds[:K]])
 
     for vid in ids.values():
@@ -37,6 +38,7 @@ def world():
     runs(ids["full"], "train", 1.0)            # mean of 1..6 = 3.5
     runs(ids["full"], "holdout", 50.0)         # never read
     runs(ids["gap"], "train", 1.0, no_gait={tasks[2].id})
+    runs(ids["viol"], "train", 1.0, violate={(tasks[0].id, tasks[0].eval_seeds[0])})
     yield ids, tasks, adb
 
     adb.versions.delete_many({"_id": {"$in": list(ids.values())}})
@@ -57,6 +59,14 @@ def test_backfill_sets_gate_mean_or_none(world):
     gap = adb.versions.find_one({"_id": ids["gap"]})
     assert "train_mean_distance_m" in gap["metrics"] and gap["metrics"]["train_mean_distance_m"] is None
     assert "train_mean_distance_m" not in adb.versions.find_one({"_id": ids["none"]})["metrics"]
+
+
+def test_backfill_counts_a_violating_run_as_minus_target(world):
+    """A14: the backfill scores like the gate; one violating run walks its target backward."""
+    ids, tasks, _ = world
+    [row] = backfill(ADA_TEST, ids=[ids["viol"]])
+    total = 2 * sum(1.0 + i for i in range(len(tasks))) - 1.0 - tasks[0].target_m
+    assert row["train_mean_distance_m"] == round(total / (2 * len(tasks)), 4)
 
 
 def test_dry_run_writes_nothing(world):

@@ -64,7 +64,8 @@ def _verifier_payload(res: dict[str, Any], edit: Edit) -> dict[str, Any]:
         "parent": {k: par.get(k) for k in ("reliability", "mean_distance_m", "n")} if par else None,
         "predicted_delta": edit.predicted_delta, "actual_delta": delta,
         "predicted_delta_m": edit.predicted_delta_m, "actual_delta_m": delta_m,
-        "gaits": res.get("gaits"), "attempt_frames_id": res.get("attempt_frames_id"),
+        "gaits": res.get("gaits"), "violations": res.get("violations"),
+        "attempt_frames_id": res.get("attempt_frames_id"),
         "frames_id": res["frames_id"], "violation_frame": res["violation_frame"],
     }
 

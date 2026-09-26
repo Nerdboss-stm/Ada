@@ -35,7 +35,7 @@ TOOL_WHITELIST: dict[str, str] = {
     "get_contact_log": "each leg's ground contact during the last preview, in equal time bins",
     "list_my_attempts": "the gaits previewed earlier in this episode, with their preview results",
 }
-CHEAP_ROLES = ("agent_v0", "agent_v0.alt")  # NOTES [A6] RULE
+CHEAP_ROLES = ("agent_v0",)  # NOTES [A6] RULE; agent_v0.alt removed (NOTES [A14])
 ENGINE_BOUNDS: dict[str, tuple[int, int]] = {"temperature": (0, 1), "max_attempts": (1, 6)}
 LIST_PRIMITIVES = ("rules", "tools")
 MAX_RATIONALE_WORDS = 25

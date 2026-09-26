@@ -30,9 +30,10 @@ def test_tool_outside_whitelist_rejects_at_constraints(world, adb):
     assert world.events()[-1][2]["reason"] == res["reason"]
 
 
-def test_frontier_model_rejects_at_constraints(world, adb):
+@pytest.mark.parametrize("role", ["frontier", "agent_v0.alt"])  # A14: agent_v0 is the only cheap role
+def test_non_cheap_model_rejects_at_constraints(world, adb, role):
     world.parent_runs(half(world.tasks))
-    res = world.gate(model_per_step={"agent": "frontier"})
+    res = world.gate(model_per_step={"agent": role})
     assert_precheck_reject(world, adb, res)
     assert res["reason"] == "model outside the cheap tier"
 
@@ -48,13 +49,15 @@ def test_power_5_rejects_at_verifier_with_frames(world, adb):
                              "gate.meta": "pass", "gate.constraints": "pass"}
     assert [(s, st) for s, st, _ in world.events()] == [
         (s, st) for s in CARD_STAGES for st in ("start", "fail" if s == "gate.verifier" else "pass")]
-    # all six episodes roll in parallel; runs stop at the first violation in task order
+    # all six episodes roll in parallel; every run is kept, the frames are the first violation's
     assert sorted(world.episodes) == sorted(t.id for t in world.tasks)
-    assert res["train"]["n"] == 1
+    assert res["train"]["n"] == 12
     frames = adb.frames.find_one({"_id": res["frames_id"]})
     assert (frames["kind"], frames["violation_frame"], frames["version_id"]) == \
         ("rejected", 1, world.cand_id)
-    run = adb.runs.find_one({"version_id": world.cand_id})
+    first = world.tasks[0]
+    run = adb.runs.find_one({"version_id": world.cand_id, "task_id": first.id,
+                             "seed": first.eval_seeds[0]})
     assert frames["run_id"] == str(run["_id"]) and run["sanity"]["violation"] == world.violation
     fail = [p for s, st, p in world.events() if st == "fail"]
     assert fail[0]["reason"] == world.violation and fail[0]["frames_id"] == res["frames_id"]

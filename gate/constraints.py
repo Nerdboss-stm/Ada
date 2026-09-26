@@ -5,7 +5,7 @@
 No model calls. The pipeline runs this silently before stage 1 and again as the
 gate.constraints cell. Order: guardrail documents verify against their content hash,
 the live sim/verifier.py and compress/ hashes match a guardrail document, tools are a
-subset of the stored whitelist, model_per_step uses only the cheap roles (NOTES [A6]),
+subset of the stored whitelist, model_per_step uses only the cheap role agent_v0 (NOTES [A6], [A14]),
 engine keys and values sit inside loop.edits.ENGINE_BOUNDS, and no rule or context_policy
 entry states a literal gait value (loop.edits.states_gait_values, the controller's own check).
 """

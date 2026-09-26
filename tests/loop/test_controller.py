@@ -206,8 +206,8 @@ def test_list_primitive_path_is_normalized():
      lambda h: h.context_policy["past_attempts"] == 4),
     (dict(primitive="context_policy", op="remove", path="past_attempts", old=2, new=None),
      lambda h: "past_attempts" not in h.context_policy),
-    (dict(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),
-     lambda h: h.model_per_step == {"agent": "agent_v0.alt"}),
+    (dict(primitive="model_per_step", op="add", path="judge", old=None, new="agent_v0"),
+     lambda h: h.model_per_step == {"agent": "agent_v0", "judge": "agent_v0"}),
     (dict(primitive="engine", op="set", path="max_attempts", old=3, new=5),
      lambda h: h.engine == {"temperature": 0, "max_attempts": 5}),
 ])
@@ -264,7 +264,7 @@ def test_duplicates_invalid_stale_and_extras_dropped(fake):
         prop(primitive="tools", op="add", path="", old=None, new="get_contact_log"),      # valid
         prop(primitive="context_policy", op="add", path="history", old=None, new=["tilt"]),  # valid
         prop(primitive="engine", op="set", path="max_attempts", old=3, new=4),            # valid
-        prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),  # valid
+        prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),  # invalid: not cheap
         "not an edit",                                                                    # invalid
         {k: v for k, v in prop(new=0.3).items() if k != "predicted_delta_m"},             # no meters
         prop(primitive="rules", op="add", path="", old=None, new="Use kp 5."),            # gait value
@@ -272,7 +272,7 @@ def test_duplicates_invalid_stale_and_extras_dropped(fake):
     fake.reply = "```json\n" + json.dumps({"edits": reply}) + "\n```"
     out = controller.propose(head(), sensor(), [], round_id="r1")
 
-    valid = [EditProposal.model_validate(r) for i, r in enumerate(reply) if i in (0, 2, 3, 5, 8, 9, 10, 11, 12)]
+    valid = [EditProposal.model_validate(r) for i, r in enumerate(reply) if i in (0, 2, 3, 5, 8, 9, 10, 11)]
     assert len(out) == controller.MAX_EDITS
     assert len({p.key() for p in out}) == len(out)
     sizes = [p.change_size() for p in out]

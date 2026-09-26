@@ -59,14 +59,20 @@ def world(monkeypatch, adb):
         power = 1.0
         violation = "test double: sanity bound tripped"
         outcome: dict[str, tuple[bool, float]] = {}  # candidate task_id -> (success, distance)
+        violate: set[tuple[str, int]] = set()  # candidate (task_id, seed) runs that break physics
 
         @classmethod
-        def parent_runs(cls, outcome, gaits=None):
-            """gaits: parent task ids that carry a submitted gait; default every task."""
+        def parent_runs(cls, outcome, gaits=None, violations=()):
+            """gaits: parent task ids that carry a submitted gait; default every task.
+            violations: parent (task_id, seed) runs stored with a failed sanity check."""
             gaits = {t.id for t in tasks} if gaits is None else set(gaits)
             docs = [{"task_id": t.id, "seed": s, "split": "train", "version_id": cls.parent_id,
-                     "success": outcome[t.id][0], "distance_m": outcome[t.id][1],
-                     "gait": {"power": 1.0} if t.id in gaits else {}}
+                     "success": outcome[t.id][0] and (t.id, s) not in violations,
+                     "distance_m": outcome[t.id][1],
+                     "gait": {"power": 1.0} if t.id in gaits else {},
+                     "sanity": {"pass": (t.id, s) not in violations,
+                                "violation": cls.violation if (t.id, s) in violations else None,
+                                "violation_frame": 1 if (t.id, s) in violations else None}}
                     for t in tasks for s in t.eval_seeds[:verifier_stage.K]]
             adb.runs.insert_many(docs)
 
@@ -104,7 +110,7 @@ def world(monkeypatch, adb):
                                    model_id="test/agent", trace_id=f"{version_id}-{task.id}")
 
     def evaluate(g, task, seed, record=False):
-        if g.power > 1.0:
+        if g.power > 1.0 or (task.id, seed) in W.violate:
             out = {"distance_m": 6.0, "fell": False, "success": False,
                    "sanity": {"pass": False, "violation": W.violation, "violation_frame": 1}}
         else:

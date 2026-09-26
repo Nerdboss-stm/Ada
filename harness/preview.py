@@ -4,7 +4,8 @@
 
 Rolls out sim.model directly for PREVIEW_S seconds; sim.verifier.evaluate and every
 module default are left alone, so a full verification running at the same time is
-unaffected. The result holds only distance, fell, max tilt and the contact rhythm:
+unaffected. The result holds only distance, fell, max tilt, the contact rhythm and max_torque_ratio
+(the highest per-joint peak torque over rated, from the same rollout) as plain telemetry:
 no sanity check, no success, and evaluation seeds are never used.
 """
 
@@ -16,7 +17,7 @@ from core.contracts import Task
 from sim import model as M
 from sim.controller import make_ctrl_fn
 from sim.gait import Gait
-from sim.verifier import TORSO_GEOM, fell
+from sim.verifier import TORSO_GEOM, TorqueLog, fell
 
 PREVIEW_S = 3.0
 LOG_BINS = 10
@@ -65,12 +66,15 @@ def run_preview(gait: Gait, task: Task, seconds: float = PREVIEW_S) -> tuple[dic
     model, data = M.load(gait.power, task.slope_deg, task.friction)
     M.reset(model, data, seed)
     x0 = float(data.xpos[model.body(M.TORSO).id][0])
-    frames = M.rollout(model, data, seed, make_ctrl_fn(model, gait), steps=round(seconds / M.TIMESTEP))
+    torque = TorqueLog(model)
+    frames = M.rollout(model, data, seed, make_ctrl_fn(model, gait), steps=round(seconds / M.TIMESTEP),
+                       on_step=torque)
     result = {
         "seconds": seconds,
         "distance_m": round(frames[-1]["torso"][0] - x0, 4),
         "fell": fell(frames),
         "max_tilt_deg": round(max(_tilt_deg(f) for f in frames), 1),
         "rhythm": rhythm(frames),
+        "max_torque_ratio": max(torque.peak_torque().values()),
     }
     return result, {"seconds": seconds, "bins": LOG_BINS, "legs": contact_log(frames)}

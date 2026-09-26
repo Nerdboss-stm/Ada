@@ -84,7 +84,8 @@ def test_violating_candidate_gets_attempt_and_rejected_frames(world, adb):
     assert res["frames_id"] != res["attempt_frames_id"]
     frames, run = attempt_frames(adb, world, res)
     assert frames["kind"] == "showcase" and frames["run_id"] == str(run["_id"])
-    assert res["train_mean_distance_m"] is None  # cut short: mean covers one run
+    # A14: every run rolls; each violating run counts as -target_m
+    assert res["train_mean_distance_m"] == round(sum(-t.target_m for t in world.tasks) / 6, 4)
 
 
 def test_no_gait_on_attempt_task_writes_no_attempt_frames(world, adb):
