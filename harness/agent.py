@@ -6,7 +6,11 @@ The model node calls core.llm.cached_chat with the role from harness.model_per_s
 the tool node runs only tools listed in harness.tools, which must be a subset of
 TOOL_WHITELIST (CONTRACTS §6). Previews live in the checkpointed state for one episode. Every submit_gait call counts
 as an attempt; the episode ends on the first valid gait or at engine.max_attempts. preview_run calls never count
-as attempts; at most MAX_PREVIEWS run per episode, later ones return PREVIEW_LIMIT_MSG. The recursion limit leaves
+as attempts; at most MAX_PREVIEWS run per episode, later ones return PREVIEW_LIMIT_MSG. preview_all_seeds runs the same
+preview on every practice seed and counts as one call toward that cap. recall_best_gait (NOTES [A18]) re-runs up to
+RECALL_POOL honest train gaits (same task first, then nearest slope and friction) on this task's practice seeds and
+returns the best RECALL_TOP by practice mean distance; it reads only split "train" runs and never returns their
+evaluation-seed distances. The recursion limit leaves
 room for every preview and every attempt. Each step is stored in `traces.raw_steps` (trace_id = thread id), with
 the episode's end_reason and preview count.
 
@@ -39,9 +43,14 @@ DEFAULT_MAX_ATTEMPTS = 3
 MAX_PREVIEWS = 6  # preview_run calls per episode, valid or not
 PREVIEW_LIMIT_MSG = "preview limit reached; submit your gait now"
 EXTRA_TURNS = 2  # read_task turn + one spare turn, on top of one turn per preview and per attempt
-TOOL_WHITELIST = (  # CONTRACTS §6, exactly 5 (NOTES [A13]: lookup_skill cut); immutable
+TOOL_WHITELIST = (  # CONTRACTS §6 (NOTES [A13]: lookup_skill cut; [A18]: the last two added); immutable
     "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts",
+    "preview_all_seeds", "recall_best_gait",
 )
+PREVIEW_TOOLS = ("preview_run", "preview_all_seeds")  # each call counts once toward MAX_PREVIEWS
+RECALL_POOL = 20  # train gaits recall_best_gait re-runs on practice seeds
+RECALL_TOP = 3
+RECALL_MAX_TORQUE_RATIO = 1.0  # recalled gaits above this on a practice seed are dropped
 
 V0_HARNESS = Harness(
     rules=[],
@@ -58,6 +67,7 @@ V0_HARNESS = Harness(
 class ToolCtx:
     task: Task
     previews: list[dict[str, Any]]  # this episode's previews, oldest first: {gait, result, contact_log}
+    db_name: str = ADA
 
 
 @dataclass(frozen=True)
@@ -101,6 +111,62 @@ def _preview_run(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
     result, log = preview.run_preview(gait, ctx.task)
     record = {"gait": gait.model_dump(), "result": result, "contact_log": log}
     return ToolOut({"ok": True, **result}, preview=record)
+
+
+def _preview_all_seeds(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    try:
+        gait = Gait.model_validate(args)
+    except ValidationError as e:
+        return ToolOut({"ok": False, "error": str(e)})
+    summary, logs = preview.run_preview_all(gait, ctx.task)
+    record = {"gait": gait.model_dump(), "result": summary, "contact_log": logs[0]}
+    return ToolOut({"ok": True, **summary}, preview=record)
+
+
+def recall_candidates(task: Task, db_name: str, pool: int = RECALL_POOL) -> list[tuple[str, Gait]]:
+    """Up to `pool` distinct gaits from physics-passing train runs: this task's first, then the nearest
+    slope, then the nearest friction; newest first within a task. distance_m is never read."""
+    database = db(db_name)
+    near = {t["_id"]: (t["slope_deg"], t["friction"])
+            for t in database.tasks.find({"split": "train"}, {"slope_deg": 1, "friction": 1})}
+
+    def closeness(task_id: str) -> tuple[int, float, float]:
+        if task_id == task.id:
+            return (0, 0.0, 0.0)
+        if task_id not in near:
+            return (2, 0.0, 0.0)
+        slope, friction = near[task_id]
+        return (1, abs(slope - task.slope_deg), abs(friction - task.friction))
+
+    runs = database.runs.find(
+        {"split": "train", "sanity.pass": True, "gait": {"$nin": [None, {}]}}, {"task_id": 1, "gait": 1},
+    ).sort("_id", -1)
+    ranked = sorted(runs, key=lambda r: closeness(r.get("task_id", "")))  # stable: newest first within ties
+    out, seen = [], set()
+    for r in ranked:
+        try:
+            gait = Gait.model_validate(r["gait"])
+        except ValidationError:
+            continue
+        key = json.dumps(gait.model_dump(), sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((r.get("task_id", ""), gait))
+        if len(out) >= pool:
+            break
+    return out
+
+
+def _recall_best_gait(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
+    scored = []
+    for task_id, gait in recall_candidates(ctx.task, ctx.db_name):
+        summary, _ = preview.run_preview_all(gait, ctx.task)
+        if summary["max_torque_ratio"] > RECALL_MAX_TORQUE_RATIO:
+            continue
+        scored.append({"task_id": task_id, "gait": gait.model_dump(), **summary})
+    scored.sort(key=lambda g: g["mean_distance_m"], reverse=True)
+    return ToolOut({"ok": True, "gaits": scored[:RECALL_TOP]})
 
 
 def _get_contact_log(ctx: ToolCtx, args: dict[str, Any]) -> ToolOut:
@@ -168,6 +234,27 @@ TOOLS: dict[str, ToolDef] = {
             NO_ARGS,
         ),
         run=_list_my_attempts,
+        is_attempt=False,
+    ),
+    "preview_all_seeds": ToolDef(
+        spec=_spec(
+            "preview_all_seeds",
+            f"Try a gait for {preview.PREVIEW_S:.0f} s on every practice run of this task without submitting it. "
+            "Returns each run's distance and whether Ada fell, the mean and minimum distance, and max_torque_ratio. "
+            "Counts as one preview.",
+            Gait.model_json_schema(),
+        ),
+        run=_preview_all_seeds,
+        is_attempt=False,
+    ),
+    "recall_best_gait": ToolDef(
+        spec=_spec(
+            "recall_best_gait",
+            f"Up to {RECALL_TOP} gaits from earlier training runs of this or the most similar tasks, each re-tried "
+            f"for {preview.PREVIEW_S:.0f} s on every practice run of this task, best mean practice distance first.",
+            NO_ARGS,
+        ),
+        run=_recall_best_gait,
         is_attempt=False,
     ),
 }
@@ -245,7 +332,7 @@ def _tokens(usage: dict[str, Any]) -> int:
 
 
 def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None = None, *,
-                fresh: bool = False):
+                fresh: bool = False, db_name: str = ADA):
     tools = bound_tools(harness)
     specs = [t.spec for t in tools.values()] or None
     role = harness.model_per_step[AGENT_STEP]
@@ -273,7 +360,7 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
             raw_args = call.get("function", {}).get("arguments") or "{}"
             tool = tools.get(name)
             valid = None
-            is_preview = name == "preview_run" and tool is not None
+            is_preview = name in PREVIEW_TOOLS and tool is not None
             if tool is None:
                 result = {"ok": False, "error": f"unknown tool {name!r}; available: {list(tools)}"}
             elif tool.is_attempt and (gait is not None or attempts >= limit):
@@ -292,7 +379,7 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
                 except ValueError as e:
                     out = ToolOut({"ok": False, "error": f"invalid arguments: {e}"})
                 else:
-                    out = tool.run(ToolCtx(task, state["previews"] + previews), args)
+                    out = tool.run(ToolCtx(task, state["previews"] + previews, db_name), args)
                 result, submitted = out.result, out.gait
                 if out.preview is not None:
                     previews.append(out.preview)
@@ -338,7 +425,7 @@ def run_episode(
     tid = thread_id(version_id, task, tag)
     saver = MongoDBSaver(client(), db_name=ckpt_db)
     saver.delete_thread(tid)  # a rerun starts fresh instead of resuming
-    graph = build_graph(task, harness, saver, fresh=fresh)
+    graph = build_graph(task, harness, saver, fresh=fresh, db_name=db_name)
     system = "\n".join([SYSTEM_PROMPT, *harness.rules])
     initial: AgentState = {
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": f"Task {task.id}."}],

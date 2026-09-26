@@ -110,7 +110,8 @@ def test_tool_outside_whitelist_is_an_error():
     with pytest.raises(ValueError, match="outside the whitelist"):
         agent.bound_tools(Harness(tools=["read_task", "set_power"], model_per_step={"agent": "agent_v0"}))
     assert agent.TOOL_WHITELIST == (
-        "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts")
+        "read_task", "submit_gait", "preview_run", "get_contact_log", "list_my_attempts",
+        "preview_all_seeds", "recall_best_gait")
 
 
 # --- preview -----------------------------------------------------------------

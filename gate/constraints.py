@@ -4,8 +4,8 @@
 
 No model calls. The pipeline runs this silently before stage 1 and again as the
 gate.constraints cell. Order: guardrail documents verify against their content hash,
-the live sim/verifier.py and compress/ hashes match a guardrail document, tools are a
-subset of the stored whitelist, model_per_step uses only the cheap role agent_v0 (NOTES [A6], [A14]),
+one guardrail document matches the live sim/verifier.py hash, compress/ hash and tool whitelist
+all at once (never chosen by _id order; NOTES [A18]), tools are a subset of that whitelist, model_per_step uses only the cheap role agent_v0 (NOTES [A6], [A14]),
 engine keys and values sit inside loop.edits.ENGINE_BOUNDS, context_policy equals the
 parent's (the agent does not read it yet, NOTES [A16]), and no rule or context_policy
 entry states a literal gait value (loop.edits.states_gait_values, the controller's own check).
@@ -30,11 +30,10 @@ def _harness_text(candidate: Version) -> list[str]:
     return [*h.rules, *(f"{k} {v if isinstance(v, str) else canon(v)}" for k, v in h.context_policy.items())]
 
 
-def _live_hashes() -> tuple[str, str | None]:
-    verifier = guardrails.file_sha256(guardrails.VERIFIER_PATH)
-    compress_dir = guardrails.COMPRESS_DIR
-    compressor = guardrails.dir_sha256(compress_dir) if compress_dir.is_dir() else None
-    return verifier, compressor
+def _live() -> tuple[str, str | None, list[str]]:
+    """The live verifier sha, compressor sha and tool whitelist, as seed_guardrails would store them."""
+    live = guardrails.current_content()
+    return live.verifier_sha, live.compressor_sha, live.tool_whitelist
 
 
 def check(candidate: Version, db_name: str = ADA, parent: Version | None = None) -> str | None:
@@ -43,16 +42,18 @@ def check(candidate: Version, db_name: str = ADA, parent: Version | None = None)
     except guardrails.GuardrailError as e:
         return f"guardrails failed to load: {e}"
 
-    verifier_sha, compressor_sha = _live_hashes()
+    verifier_sha, compressor_sha, tool_whitelist = _live()
     matching = [d for d in docs if d.content.verifier_sha == verifier_sha]
     if not matching:
         return "sim/verifier.py changed: its sha256 matches no guardrail document"
     matching = [d for d in matching if d.content.compressor_sha == compressor_sha]
     if not matching:
         return "compress/ changed: its sha256 matches no guardrail document"
+    if not any(d.content.tool_whitelist == tool_whitelist for d in matching):
+        return "tool whitelist changed: it matches no guardrail document"
 
     harness = candidate.harness
-    whitelist = set(matching[0].content.tool_whitelist)
+    whitelist = set(tool_whitelist)
     outside = [t for t in harness.tools if t not in whitelist]
     if outside:
         return f"tools outside the whitelist: {', '.join(outside)}"

@@ -1,6 +1,7 @@
 """Preview (SPEC §3 preview_run): a short sim of one gait on the task's first practice seed.
 
-    run_preview(gait, task) -> (result, contact_log)
+    run_preview(gait, task, seed=None) -> (result, contact_log)   seed defaults to the first practice seed
+    run_preview_all(gait, task) -> (summary, contact_logs)        every practice seed (NOTES [A18])
 
 Rolls out sim.model directly for PREVIEW_S seconds; sim.verifier.evaluate and every
 module default are left alone, so a full verification running at the same time is
@@ -61,8 +62,11 @@ def contact_log(frames: list[dict], bins: int = LOG_BINS) -> dict[str, list[floa
     return out
 
 
-def run_preview(gait: Gait, task: Task, seconds: float = PREVIEW_S) -> tuple[dict, dict]:
-    seed = preview_seed(task)
+def run_preview(gait: Gait, task: Task, seconds: float = PREVIEW_S, seed: int | None = None) -> tuple[dict, dict]:
+    if seed is None:
+        seed = preview_seed(task)
+    elif seed not in task.practice_seeds:
+        raise ValueError(f"seed {seed} is not a practice seed of {task.id}")
     model, data = M.load(gait.power, task.slope_deg, task.friction)
     M.reset(model, data, seed)
     x0 = float(data.xpos[model.body(M.TORSO).id][0])
@@ -78,3 +82,23 @@ def run_preview(gait: Gait, task: Task, seconds: float = PREVIEW_S) -> tuple[dic
         "max_torque_ratio": max(torque.peak_torque().values()),
     }
     return result, {"seconds": seconds, "bins": LOG_BINS, "legs": contact_log(frames)}
+
+
+def run_preview_all(gait: Gait, task: Task, seconds: float = PREVIEW_S) -> tuple[dict, list[dict]]:
+    """run_preview on every practice seed: per-seed distance and fell, their mean and minimum distance,
+    and the highest max_torque_ratio. Contact logs come back in practice-seed order."""
+    seeds, logs = [], []
+    for seed in task.practice_seeds:
+        result, log = run_preview(gait, task, seconds, seed=seed)
+        seeds.append({"seed": seed, "distance_m": result["distance_m"], "fell": result["fell"],
+                      "max_torque_ratio": result["max_torque_ratio"]})
+        logs.append(log)
+    distances = [s["distance_m"] for s in seeds]
+    summary = {
+        "seconds": seconds,
+        "seeds": [{k: s[k] for k in ("seed", "distance_m", "fell")} for s in seeds],
+        "mean_distance_m": round(sum(distances) / len(distances), 4),
+        "min_distance_m": min(distances),
+        "max_torque_ratio": max(s["max_torque_ratio"] for s in seeds),
+    }
+    return summary, logs

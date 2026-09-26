@@ -134,6 +134,13 @@ def test_validation_rejects(over):
         EditProposal.model_validate(prop(**over))
 
 
+@pytest.mark.parametrize("tool", ["preview_all_seeds", "recall_best_gait"])
+def test_a18_tools_can_be_granted(tool):
+    p = EditProposal.model_validate(prop(primitive="tools", op="add", path="", old=None, new=tool,
+                                         rationale="The agent should see more than one practice seed."))
+    assert apply_edit(harness(), p).tools == ["read_task", "submit_gait", tool]
+
+
 def test_predicted_delta_m_is_required():
     base = prop()
     del base["predicted_delta_m"]
