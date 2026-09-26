@@ -1,7 +1,9 @@
 """Edit proposals (SPEC §5) and a pure apply_edit over the five harness primitives (SPEC §3).
 
-    EditProposal   one edit: primitive, op, path, old, new, predicted_delta, rationale, evidence
+    EditProposal   one edit: primitive, op, path, old, new, predicted_delta, predicted_delta_m,
+                   rationale, evidence
     apply_edit(harness, proposal) -> Harness   a new harness; the input is never mutated
+    states_gait_values(text) -> bool           a gait field name within 12 characters of a number
 
 Semantics per primitive:
     rules, tools             lists; path is always "". add appends `new`, remove drops `old`,
@@ -21,7 +23,7 @@ import math
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from core.contracts import Harness
 
@@ -44,6 +46,15 @@ Op = Literal["add", "remove", "set"]
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 
+# Gait fields (sim.gait.Gait) the supervisor may never pin to a number; the agent picks the numbers.
+GAIT_VALUE_REASON = "states literal gait values"
+GAIT_VALUE_GAP = 12  # characters allowed between a field name and a number
+_GAIT_NAME = re.compile(
+    r"(?<![a-z])(?:frequenc(?:y|ies)|power|kp|kd|amplitudes?|offsets?|phases?|tilt_gain|hz)(?![a-z])",
+    re.I,
+)
+_NUMBER = re.compile(r"\d+(?:\.\d+)?|\.\d+")
+
 
 class EditError(ValueError):
     """The proposal does not fit the harness it is applied to."""
@@ -57,6 +68,18 @@ def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def states_gait_values(text: str) -> bool:
+    """True when a gait field name and a number sit within GAIT_VALUE_GAP characters, either order."""
+    numbers = [m.span() for m in _NUMBER.finditer(text)]
+    for name in _GAIT_NAME.finditer(text):
+        a, b = name.span()
+        for c, d in numbers:
+            gap = c - b if c >= b else a - d
+            if gap <= GAIT_VALUE_GAP:
+                return True
+    return False
+
+
 class EditProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -66,14 +89,24 @@ class EditProposal(BaseModel):
     old: Any = None
     new: Any = None
     predicted_delta: float  # expected change in train reliability
+    predicted_delta_m: float  # expected change in train mean distance, meters
     rationale: str
     evidence_trace_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("predicted_delta_m", mode="before")
+    @classmethod
+    def _meters_is_number(cls, v: Any) -> Any:
+        if not _is_number(v):
+            raise ValueError(f"predicted_delta_m must be a finite number, got {v!r}")
+        return v
 
     @model_validator(mode="after")
     def _check(self) -> EditProposal:
         if not math.isfinite(self.predicted_delta) or not -1 <= self.predicted_delta <= 1:
             raise ValueError(f"predicted_delta {self.predicted_delta} outside [-1, 1]")
         self._check_rationale()
+        if states_gait_values(self.added_text()):
+            raise ValueError(GAIT_VALUE_REASON)
         if self.primitive in LIST_PRIMITIVES:
             self.path = ""
             self._check_list()
@@ -127,6 +160,13 @@ class EditProposal(BaseModel):
             raise ValueError(f"engine.{self.path} must be a number in [{lo}, {hi}], got {self.new!r}")
         if self.path == "max_attempts" and not isinstance(self.new, int):
             raise ValueError(f"engine.max_attempts must be an integer, got {self.new!r}")
+
+    def added_text(self) -> str:
+        """The text this edit adds or changes in the harness: `new`, with the key for dict primitives."""
+        if self.op == "remove" or self.new is None:
+            return ""
+        new = self.new if isinstance(self.new, str) else canon(self.new)
+        return new if self.primitive in LIST_PRIMITIVES else f"{self.path} {new}"
 
     def change_size(self) -> int:
         """Characters of old plus new as canonical JSON; the controller sorts smallest first."""

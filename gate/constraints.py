@@ -6,7 +6,8 @@ No model calls. The pipeline runs this silently before stage 1 and again as the
 gate.constraints cell. Order: guardrail documents verify against their content hash,
 the live sim/verifier.py and compress/ hashes match a guardrail document, tools are a
 subset of the stored whitelist, model_per_step uses only the cheap roles (NOTES [A6]),
-engine keys and values sit inside loop.edits.ENGINE_BOUNDS.
+engine keys and values sit inside loop.edits.ENGINE_BOUNDS, and no rule or context_policy
+entry states a literal gait value (loop.edits.states_gait_values, the controller's own check).
 """
 
 from __future__ import annotations
@@ -16,9 +17,15 @@ import math
 from core.contracts import Version
 from core.db import ADA
 from harness import guardrails
-from loop.edits import CHEAP_ROLES, ENGINE_BOUNDS
+from loop.edits import CHEAP_ROLES, ENGINE_BOUNDS, GAIT_VALUE_REASON, canon, states_gait_values
 
 CHEAP_TIER_REASON = "model outside the cheap tier"
+
+
+def _harness_text(candidate: Version) -> list[str]:
+    """Free text the supervisor can write: each rule, and each context_policy key with its value."""
+    h = candidate.harness
+    return [*h.rules, *(f"{k} {v if isinstance(v, str) else canon(v)}" for k, v in h.context_policy.items())]
 
 
 def _live_hashes() -> tuple[str, str | None]:
@@ -58,4 +65,7 @@ def check(candidate: Version, db_name: str = ADA) -> str | None:
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if not number or not math.isfinite(value) or not lo <= value <= hi:
             return f"engine.{key} = {value!r} outside [{lo}, {hi}]"
+
+    if any(states_gait_values(text) for text in _harness_text(candidate)):
+        return GAIT_VALUE_REASON
     return None

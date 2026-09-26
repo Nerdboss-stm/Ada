@@ -21,7 +21,8 @@ REASON = "exceeds Ada rated motors"
 
 def prop(**over):
     base = {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": 0.2,
-            "predicted_delta": 0.05, "rationale": "Some variety may help the agent escape a bad gait.",
+            "predicted_delta": 0.05, "predicted_delta_m": 0.12,
+            "rationale": "Some variety may help the agent escape a bad gait.",
             "evidence_trace_ids": ["tr-fell-1", "tr-fell-2"]}
     return EditProposal.model_validate({**base, **over})
 
@@ -152,11 +153,13 @@ def test_accept_advances_head(world, adb):
         (world.head_id, "set", "temperature", 0, 0.2)
     assert e1["evidence_trace_ids"] == ["tr-fell-1", "tr-fell-2"]
     assert e1["rationale"] == P_TEMP.rationale and e1["predicted_delta"] == 0.05
+    assert e1["predicted_delta_m"] == 0.12
 
     ev = actuator_events(adb, r["round_id"])
     assert [(e["status"], e["payload"]["event"]) for e in ev] == [
         ("start", "round_open"), ("pass", "decision"), ("pass", "decision"), ("info", "round_close")]
     assert ev[1]["edit_id"] == e1["_id"] and ev[1]["version_id"] == c1
+    assert ev[1]["payload"]["predicted_delta_m"] == 0.12
 
 
 def test_reject_keeps_head(world, adb):

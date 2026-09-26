@@ -167,7 +167,7 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
         _id=f"{round_id}.e{index}", round_id=round_id, from_version=head.id, to_version=child_id,
         origin="model", primitive=p.primitive, op=p.op, path=p.path, old=p.old, new=p.new,
         rationale=p.rationale, evidence_trace_ids=p.evidence_trace_ids,
-        predicted_delta=p.predicted_delta, created_at=_now(),
+        predicted_delta=p.predicted_delta, predicted_delta_m=p.predicted_delta_m, created_at=_now(),
     )
     db(db_name).edits.insert_one(edit.model_dump(by_alias=True))
     candidate = Version(_id=child_id, parent=head.id, status="candidate", harness=harness,
@@ -197,7 +197,8 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
     emit(STAGE, "pass" if accepted else "fail", {
         "event": "decision", "decision": verdict, "index": index, "from_version": head.id,
         "to_version": child_id, "reason": _clip(result.get("reason")), "actual_delta": actual,
-        "predicted_delta": p.predicted_delta, "frames_id": frames_id, "stages": result.get("stages"),
+        "predicted_delta": p.predicted_delta, "predicted_delta_m": p.predicted_delta_m,
+        "frames_id": frames_id, "stages": result.get("stages"),
     }, round_id=round_id, version_id=child_id, edit_id=edit.id, db_name=db_name)
 
     spend = float(train["cost_per_run_usd"]) * int(train["n"])  # per episode x runs: errs high

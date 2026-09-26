@@ -38,6 +38,7 @@ FORCE_JOINTS = ("hip_1", "ankle_1", "hip_2", "ankle_2", "hip_3", "ankle_3", "hip
 GEOM_TYPES = {int(mujoco.mjtGeom.mjGEOM_SPHERE): "sphere", int(mujoco.mjtGeom.mjGEOM_CAPSULE): "capsule"}
 
 CtrlFn = Callable[[float, mujoco.MjData], np.ndarray]
+StepFn = Callable[[int, mujoco.MjData], None]
 
 
 def load(power: float = 1.0, slope_deg: float = 0.0, friction: float = 1.0) -> tuple[mujoco.MjModel, mujoco.MjData]:
@@ -106,14 +107,20 @@ def rollout(
     ctrl_fn: CtrlFn,
     steps: int = EPISODE_STEPS,
     every: int = RECORD_EVERY,
+    on_step: StepFn | None = None,
 ) -> list[dict]:
-    """Reset with seed, step `steps` times with ctrl = ctrl_fn(t, data), record a frame every `every` steps."""
+    """Reset with seed, step `steps` times with ctrl = ctrl_fn(t, data), record a frame every `every` steps.
+
+    on_step(step, data), if given, runs after every mj_step; it must not change `data`.
+    """
     reset(model, data, seed)
     idx = _Indices(model)
     frames = []
     for step in range(steps):
         data.ctrl[:] = np.clip(ctrl_fn(float(data.time), data), -1.0, 1.0)
         mujoco.mj_step(model, data)
+        if on_step is not None:
+            on_step(step, data)
         if (step + 1) % every == 0:
             frames.append(_frame(model, data, idx))
     return frames

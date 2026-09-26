@@ -2,12 +2,13 @@
 
     propose(head_version, sensor_summary, recent_edits, round_id=None) -> list[EditProposal]
 
-The prompt carries the head harness, the tool whitelist, the sensor summary with its example
-trace ids, the last 10 edits with verdict and reason, and the objective. Dynamic content (sensor
-readings, gate reasons) goes in verbatim: it is the gate's real feedback. Only the static
+The prompt carries the head harness (never its metrics: holdout stays unseen), the tool
+whitelist, the sensor summary with its example trace ids, the last 10 edits with verdict and
+reason, and the objective. Dynamic content (sensor readings, gate reasons) goes in verbatim: it is the gate's real feedback. Only the static
 template we wrote is checked against BANNED. The cost is estimated before the call and the call
-is refused above BUDGET_USD. The reply is JSON; invalid, stale and duplicate proposals are
-dropped, the rest sorted smallest change first and cut to MAX_EDITS. One controller event.
+is refused above BUDGET_USD. The reply is JSON; invalid (including a missing predicted_delta_m
+or literal gait values), stale and duplicate proposals are dropped, the rest sorted smallest
+change first and cut to MAX_EDITS. One controller event.
 """
 
 from __future__ import annotations
@@ -36,8 +37,8 @@ BUDGET_USD = 3.0
 MAX_TOKENS = 4096
 CHARS_PER_TOKEN = 3  # deliberately low, so the estimate errs high
 BANNED = ("power", "glitch", "exploit", "cheat")
-EDIT_FIELDS = ("_id", "primitive", "op", "path", "old", "new", "predicted_delta", "actual_delta",
-               "verdict", "reason")
+EDIT_FIELDS = ("_id", "primitive", "op", "path", "old", "new", "predicted_delta", "predicted_delta_m",
+               "actual_delta", "verdict", "reason")
 
 SYSTEM = (
     "You tune the harness of a small, cheap agent that writes gaits for Ada, a four-legged robot. "
@@ -56,6 +57,7 @@ TEMPLATE = """Objective, to maximize: {objective}
 - model_per_step: object; `path` is the step name ("agent"); `new` must be one of {roles}. add or set only.
 - engine: object; set only; `path` is {engine}; temperature in [0, 1], max_attempts an integer in [1, 6].
 For every edit, `old` must equal the head's current value (null when adding). Each edit is tested alone against the head version.
+Rules and context_policy text must not state literal gait values (a gait field name next to a number); the agent chooses the numbers. Such edits are dropped.
 
 ## Tool whitelist
 {tools}
@@ -69,7 +71,8 @@ For every edit, `old` must equal the head's current value (null when adding). Ea
 ## Reply
 A JSON object {{"edits": [...]}} with at most {max_edits} edits, smallest change first. Each edit:
 {{"primitive": "rules|context_policy|tools|model_per_step|engine", "op": "add|remove|set", "path": "", "old": null, "new": null,
- "predicted_delta": <expected change in train reliability, -1 to 1>, "rationale": "<one sentence, at most {max_words} words>",
+ "predicted_delta": <expected change in train reliability, -1 to 1>,
+ "predicted_delta_m": <expected change in train mean distance in meters, a number; required>, "rationale": "<one sentence, at most {max_words} words>",
  "evidence_trace_ids": ["<trace ids from the sensor summary that motivate the edit>"]}}"""
 
 

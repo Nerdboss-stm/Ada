@@ -125,7 +125,7 @@ def run(parent: Version, candidate: Version, db_name: str = ADA) -> dict[str, An
                 distance_m=float(result["distance_m"]), fell=bool(result["fell"]),
                 sanity=Sanity.model_validate(result["sanity"]), success=bool(result["success"]),
                 cost_usd=round(ep.cost_usd / len(seeds), 6), tokens=ep.tokens // len(seeds),
-                trace_id=ep.trace_id,
+                trace_id=ep.trace_id, peak_torque=result.get("peak_torque") or {},
             )
             run_id = str(db(db_name).runs.insert_one(
                 run_doc.model_dump(by_alias=True, exclude={"id"})).inserted_id)

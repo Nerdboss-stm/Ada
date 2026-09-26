@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -7,7 +8,9 @@ from pydantic import ValidationError
 
 import loop.controller as controller
 from core.contracts import ChatResult, Harness
-from loop.edits import TOOL_WHITELIST, EditError, EditProposal, apply_edit
+from loop.edits import (
+    GAIT_VALUE_REASON, TOOL_WHITELIST, EditError, EditProposal, apply_edit, states_gait_values,
+)
 
 BANNED = ("power", "glitch", "exploit", "cheat")
 SPEED = "body speed exceeds physical bound; exploits the simulator"
@@ -46,13 +49,15 @@ def sensor(sanity=False):
 def edit(i, verdict="accepted", reason=None):
     return {"_id": f"edit-{i:02d}", "round_id": "r1", "from_version": "v2", "origin": "model",
             "primitive": "rules", "op": "add", "path": "", "old": None, "new": f"Rule {i}.",
-            "rationale": "Try it.", "predicted_delta": 0.05, "actual_delta": 0.01,
+            "rationale": "Try it.", "predicted_delta": 0.05, "predicted_delta_m": 0.2,
+            "actual_delta": 0.01,
             "verdict": verdict, "reason": reason, "created_at": NOW}
 
 
 def prop(**over):
     base = {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": 0.2,
-            "predicted_delta": 0.05, "rationale": "Some variety may help the agent escape a bad gait.",
+            "predicted_delta": 0.05, "predicted_delta_m": 0.15,
+            "rationale": "Some variety may help the agent escape a bad gait.",
             "evidence_trace_ids": ["tr-fell-1"]}
     return {**base, **over}
 
@@ -117,11 +122,59 @@ def test_valid_proposal_passes():
     {"rationale": ""},
     {"predicted_delta": 1.5},
     {"predicted_delta": float("nan")},
+    {"predicted_delta_m": None},
+    {"predicted_delta_m": "0.3"},
+    {"predicted_delta_m": True},
+    {"predicted_delta_m": float("inf")},
     {"surprise": 1},
 ])
 def test_validation_rejects(over):
     with pytest.raises(ValidationError):
         EditProposal.model_validate(prop(**over))
+
+
+def test_predicted_delta_m_is_required():
+    base = prop()
+    del base["predicted_delta_m"]
+    with pytest.raises(ValidationError):
+        EditProposal.model_validate(base)
+    assert EditProposal.model_validate(prop(predicted_delta_m=-1)).predicted_delta_m == -1
+
+
+# --- gait-number guardrail ----------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "Use kp 5 on slopes.", "Try 1.5Hz strides.", "Set the stride frequency to 2.", "Lower the offsets to 0.3",
+    "KD of 0.4 steadies the legs.", "0.8 amplitude on the hips.", "phase=3.14 on leg four",
+    '{"frequency_hz":1.5}', "tilt_gain 1",
+])
+def test_states_gait_values_catches(text):
+    assert states_gait_values(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Keep the torso level.", "Use at most 3 attempts.", "Lower the stride frequency on steep slopes.",
+    "Prefer a slower stride frequency on slopes steeper than 4 degrees", "Preview twice, then submit.",
+    "backward 3 times",
+])
+def test_states_gait_values_allows(text):
+    assert not states_gait_values(text)
+
+
+@pytest.mark.parametrize("over", [
+    {"primitive": "rules", "op": "add", "path": "", "old": None, "new": "Use kp 5 on slopes."},
+    {"primitive": "rules", "op": "set", "path": "", "old": "Keep the torso level.", "new": "Keep kd near 0.4."},
+    {"primitive": "context_policy", "op": "add", "path": "hint", "old": None, "new": {"frequency_hz": 1.5}},
+    {"primitive": "context_policy", "op": "add", "path": "amplitude", "old": None, "new": 0.8},
+])
+def test_gait_values_in_added_text_rejected(over):
+    with pytest.raises(ValidationError, match=GAIT_VALUE_REASON):
+        EditProposal.model_validate(prop(**over))
+
+
+def test_gait_values_only_in_removed_text_allowed():
+    p = EditProposal.model_validate(prop(primitive="rules", op="remove", path="", old="Use kp 5.", new=None))
+    assert p.added_text() == ""
 
 
 def test_rationale_with_decimal_is_one_sentence():
@@ -213,6 +266,8 @@ def test_duplicates_invalid_stale_and_extras_dropped(fake):
         prop(primitive="engine", op="set", path="max_attempts", old=3, new=4),            # valid
         prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),  # valid
         "not an edit",                                                                    # invalid
+        {k: v for k, v in prop(new=0.3).items() if k != "predicted_delta_m"},             # no meters
+        prop(primitive="rules", op="add", path="", old=None, new="Use kp 5."),            # gait value
     ]
     fake.reply = "```json\n" + json.dumps({"edits": reply}) + "\n```"
     out = controller.propose(head(), sensor(), [], round_id="r1")
@@ -277,6 +332,8 @@ def test_prompt_contents(fake):
     controller.propose(head(), sensor(sanity=True), history)
     text = prompt_text(fake)
     assert "0.7 × train reliability + 0.3 × normalized mean distance" in text
+    assert "predicted_delta_m" in text and "meters" in text
+    assert '"predicted_delta_m": 0.2' in text  # past bets are shown
     for tool in TOOL_WHITELIST:
         assert tool in text
     for trace in ("tr-fell-1", "tr-fell-2", "tr-short-1", "tr-sanity-1"):
@@ -293,3 +350,27 @@ def test_prompt_contents(fake):
 def test_assert_clean_catches_template_words():
     with pytest.raises(AssertionError):
         controller._assert_clean("Use more POWER.")
+
+
+# --- holdout isolation --------------------------------------------------------
+
+HOLDOUT = 0.8333
+
+
+def test_prompt_never_shows_holdout(fake):
+    h = head() | {"metrics": {"train_reliability": 0.4167, "holdout_reliability_80": HOLDOUT,
+                              "mean_distance_m": 1.73, "cost_per_run_usd": 0.0012, "n": 18}}
+    history = [edit(i) for i in range(3)]
+    controller.propose(h, sensor(), history)
+    text = prompt_text(fake)
+    assert str(HOLDOUT) not in text and "83.33" not in text
+    assert "holdout" not in text.lower()
+    assert "18" not in text  # the holdout run count
+
+
+def test_loop_selection_never_reads_holdout():
+    loop_dir = Path(controller.__file__).parent
+    for name in ("controller.py", "sensor.py", "edits.py", "subset.py"):
+        code = (loop_dir / name).read_text()
+        assert "holdout_reliability_80" not in code, name
+        assert '"holdout"' not in code and "'holdout'" not in code, name
