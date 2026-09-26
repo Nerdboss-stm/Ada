@@ -13,6 +13,11 @@ Holdout runs its per-task episodes in parallel (HOLDOUT_WORKERS threads); result
 
 v0 always runs V0_HARNESS; every other version loads its harness from `versions`.
 
+store_as runs one split's tasks but stores the runs (and harness events) under another split
+name, in their own episode threads and traces (tag = store_as). Such runs never touch
+`versions`: run_split returns a Version whose metrics describe those runs, unsaved (the
+swap uses store_as="swap"). fresh=True makes every model call live (core.llm fresh).
+
 Before the first episode, harness.guardrails.load_guardrails() must pass; on a
 mismatch the run refuses to start.
 """
@@ -28,7 +33,7 @@ from datetime import datetime, timezone
 from statistics import mean
 from typing import Any
 
-from core.contracts import FrameKind, Harness, Metrics, Run, Sanity, Split, Task, Version
+from core.contracts import FrameKind, Harness, Metrics, Run, RunSplit, Sanity, Split, Task, Version
 from core.db import ADA, ADA_CKPT, db
 from core.events import emit
 from harness.agent import V0_HARNESS, EpisodeResult, run_episode
@@ -72,11 +77,14 @@ def _evaluate(ep: EpisodeResult, task: Task, seed: int, record: bool) -> dict[st
 def run_task(
     task: Task, version_id: str, harness: Harness, split: Split, k: int, *,
     db_name: str = ADA, ckpt_db: str = ADA_CKPT, frames_kind: FrameKind = "showcase",
+    store_as: RunSplit | None = None, fresh: bool = False,
 ) -> dict[str, Any]:
     """One episode, k evaluated runs. Returns {episode, runs[], frames_id}."""
-    emit("harness", "start", {"task_id": task.id, "split": split, "k": k},
+    label = store_as or split
+    emit("harness", "start", {"task_id": task.id, "split": label, "k": k},
          version_id=version_id, db_name=db_name)
-    ep = run_episode(task, version_id, harness, db_name=db_name, ckpt_db=ckpt_db)
+    ep = run_episode(task, version_id, harness, db_name=db_name, ckpt_db=ckpt_db, fresh=fresh,
+                     tag=label if label != split else None)
     seeds = task.eval_seeds[:k]
     record = split == "showcase"
     cost_share = round(ep.cost_usd / len(seeds), 6) if seeds else 0.0
@@ -85,7 +93,7 @@ def run_task(
     for seed in seeds:
         result = _evaluate(ep, task, seed, record)
         run = Run(
-            task_id=task.id, seed=seed, split=split, version_id=version_id, model_id=ep.model_id,
+            task_id=task.id, seed=seed, split=label, version_id=version_id, model_id=ep.model_id,
             gait=ep.gait.model_dump() if ep.gait is not None else {},
             distance_m=float(result["distance_m"]), fell=bool(result["fell"]),
             sanity=Sanity.model_validate(result["sanity"]), success=bool(result["success"]),
@@ -112,11 +120,11 @@ def run_task(
     return {"episode": ep, "runs": runs, "ok": ok, "frames_id": frames_id}
 
 
-def _write_version(
+def _build_version(
     version_id: str, harness: Harness, split: Split, results: list[dict[str, Any]], db_name: str,
 ) -> Version:
-    coll = db(db_name).versions
-    existing = coll.find_one({"_id": version_id}) or {}
+    """The versions document these results would produce; nothing is written."""
+    existing = db(db_name).versions.find_one({"_id": version_id}) or {}
     runs = [r for res in results for r in res["runs"]]
     reliability = round(mean(res["ok"] for res in results), 4) if results else 0.0
     metrics = dict(existing.get("metrics") or {
@@ -134,7 +142,7 @@ def _write_version(
         )
         metrics["train_reliability" if split == "train" else "holdout_reliability_80"] = reliability
     frames_ids = [res["frames_id"] for res in results if res["frames_id"]]
-    version = Version(
+    return Version(
         _id=version_id,
         parent=existing.get("parent"),
         status=existing.get("status") or "baseline",
@@ -143,14 +151,20 @@ def _write_version(
         showcase_frames_id=frames_ids[-1] if frames_ids else existing.get("showcase_frames_id"),
         created_at=existing.get("created_at") or datetime.now(timezone.utc),
     )
-    coll.replace_one({"_id": version_id}, version.model_dump(by_alias=True), upsert=True)
+
+
+def _write_version(
+    version_id: str, harness: Harness, split: Split, results: list[dict[str, Any]], db_name: str,
+) -> Version:
+    version = _build_version(version_id, harness, split, results, db_name)
+    db(db_name).versions.replace_one({"_id": version_id}, version.model_dump(by_alias=True), upsert=True)
     return version
 
 
 def run_split(
     version_id: str, split: Split, k: int, *, tasks: list[Task] | None = None,
     harness: Harness | None = None, db_name: str = ADA, ckpt_db: str = ADA_CKPT,
-    frames_kind: FrameKind = "showcase",
+    frames_kind: FrameKind = "showcase", store_as: RunSplit | None = None, fresh: bool = False,
 ) -> Version:
     if split not in SPLITS:
         raise ValueError(f"split {split!r}; expected one of {SPLITS}")
@@ -159,16 +173,19 @@ def run_split(
     load_guardrails(db_name)  # raises GuardrailError: the run refuses to start
     harness = harness or load_harness(version_id, db_name)
     tasks = tasks if tasks is not None else load_tasks(split, db_name)
-    db(db_name).runs.delete_many({"version_id": version_id, "split": split})  # reruns replace
+    label = store_as or split
+    db(db_name).runs.delete_many({"version_id": version_id, "split": label})  # reruns replace
     def one(t: Task) -> dict[str, Any]:
         return run_task(t, version_id, harness, split, k, db_name=db_name, ckpt_db=ckpt_db,
-                        frames_kind=frames_kind)
+                        frames_kind=frames_kind, store_as=store_as, fresh=fresh)
 
     if split == "holdout":
         with ThreadPoolExecutor(max_workers=HOLDOUT_WORKERS) as pool:
             results = list(pool.map(one, tasks))  # map keeps task order
     else:
         results = [one(t) for t in tasks]
+    if label != split:  # [B11] relabelled runs (the swap) never update a version's metrics
+        return _build_version(version_id, harness, split, results, db_name)
     return _write_version(version_id, harness, split, results, db_name)
 
 

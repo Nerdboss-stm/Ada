@@ -9,6 +9,10 @@ as an attempt; the episode ends on the first valid gait or at engine.max_attempt
 as attempts; at most MAX_PREVIEWS run per episode, later ones return PREVIEW_LIMIT_MSG. The recursion limit leaves
 room for every preview and every attempt. Each step is stored in `traces.raw_steps` (trace_id = thread id), with
 the episode's end_reason and preview count.
+
+fresh=True makes every model call in the episode a live call (core.llm.cached_chat fresh=True).
+A tag gives the episode its own thread and trace ({version}-{task}-{seed}-{tag}), so a tagged
+rerun never deletes or overwrites another episode's checkpoint or trace.
 """
 
 from __future__ import annotations
@@ -204,6 +208,7 @@ class EpisodeResult:
     model_id: str
     trace_id: str
     end_reason: str | None = None  # submitted|attempts_exhausted|previews_exhausted|step_limit|no_tool_call
+    model_calls: int = 0
 
 
 def max_attempts(harness: Harness) -> int:
@@ -239,7 +244,8 @@ def _tokens(usage: dict[str, Any]) -> int:
     return int(total)
 
 
-def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None = None):
+def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None = None, *,
+                fresh: bool = False):
     tools = bound_tools(harness)
     specs = [t.spec for t in tools.values()] or None
     role = harness.model_per_step[AGENT_STEP]
@@ -247,7 +253,7 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
     params = {k: harness.engine[k] for k in ("temperature",) if harness.engine.get(k) is not None}
 
     def model_node(state: AgentState) -> dict[str, Any]:
-        res = llm.cached_chat(role, state["messages"], tools=specs, **params)
+        res = llm.cached_chat(role, state["messages"], tools=specs, fresh=fresh, **params)
         msg = _assistant_message(res.message)
         step = {
             "node": "model", "role": role, "model_id": res.model_id, "prompt_hash": res.prompt_hash,
@@ -319,18 +325,20 @@ def build_graph(task: Task, harness: Harness, checkpointer: MongoDBSaver | None 
     return graph.compile(checkpointer=checkpointer)
 
 
-def thread_id(version_id: str, task: Task) -> str:
-    """{version}-{task}-{seed}; one episode per task, keyed by its first practice seed."""
-    return f"{version_id}-{task.id}-{task.practice_seeds[0]}"
+def thread_id(version_id: str, task: Task, tag: str | None = None) -> str:
+    """{version}-{task}-{seed}[-{tag}]; one episode per task, keyed by its first practice seed."""
+    base = f"{version_id}-{task.id}-{task.practice_seeds[0]}"
+    return f"{base}-{tag}" if tag else base
 
 
 def run_episode(
     task: Task, version_id: str, harness: Harness, *, db_name: str = ADA, ckpt_db: str = ADA_CKPT,
+    fresh: bool = False, tag: str | None = None,
 ) -> EpisodeResult:
-    tid = thread_id(version_id, task)
+    tid = thread_id(version_id, task, tag)
     saver = MongoDBSaver(client(), db_name=ckpt_db)
     saver.delete_thread(tid)  # a rerun starts fresh instead of resuming
-    graph = build_graph(task, harness, saver)
+    graph = build_graph(task, harness, saver, fresh=fresh)
     system = "\n".join([SYSTEM_PROMPT, *harness.rules])
     initial: AgentState = {
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": f"Task {task.id}."}],
@@ -358,4 +366,5 @@ def run_episode(
         model_id=state["model_id"] or llm.models()[role]["id"],
         trace_id=tid,
         end_reason=reason,
+        model_calls=sum(s["node"] == "model" for s in state["steps"]),
     )

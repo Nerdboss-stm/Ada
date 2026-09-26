@@ -3,14 +3,18 @@
     uv run python -m scripts.capture_swap --best <version_id> [--task <holdout task id>]
 
 1. v0 (left), then the best version (right), back to back through harness.run.run_split
-   on every holdout task, k = 3. Each side's holdout runs and metrics are replaced.
+   on every holdout task, k = 3, with fresh=True (every model call live, nothing cached).
+   The runs are stored with split "swap" in their own threads and traces [B11], so v0's
+   frozen holdout runs and every version's metrics stay untouched; a side's earlier swap
+   runs are replaced.
 2. Showcase frames for both on one fixed holdout task (default: the first holdout task by
-   _id): the side's stored run on the task's first eval seed is re-evaluated with
+   _id): the side's swap run on the task's first eval seed is re-evaluated with
    record=True, must reproduce the stored distance, and is written as kind "showcase".
-3. One `swaps` document: holdout tasks passed per side, frames ids, both agent model ids
-   (from the runs), harness_diff (changed lines between the two harness documents; a
-   model line first when the models differ), and verifier_sha, mujoco_version,
-   manifest_version read from the live code.
+3. One `swaps` document: holdout tasks passed per side, counted from the swap runs,
+   frames ids, both agent model ids (from the runs), harness_diff (changed lines between
+   the two harness documents; a model line first when the models differ), verifier_sha,
+   mujoco_version, manifest_version read from the live code, and model_calls /
+   fresh_calls read from the swap traces.
 """
 
 from __future__ import annotations
@@ -32,7 +36,8 @@ from sim import record, verifier
 from sim.gait import Gait
 
 LEFT = "v0"
-SPLIT = "holdout"
+SPLIT = "holdout"  # the tasks the swap runs on
+STORED = "swap"  # the split its runs are stored under
 K = 3
 
 
@@ -58,7 +63,14 @@ def harness_diff(left: Harness, right: Harness, model_id: str, right_model_id: s
 
 
 def _runs(version_id: str, db_name: str) -> list[dict]:
-    return list(db(db_name).runs.find({"version_id": version_id, "split": SPLIT}).sort([("task_id", 1), ("seed", 1)]))
+    return list(db(db_name).runs.find({"version_id": version_id, "split": STORED}).sort([("task_id", 1), ("seed", 1)]))
+
+
+def model_steps(runs: list[dict], db_name: str) -> list[dict]:
+    """The agent model steps of every episode behind these runs (one trace per episode)."""
+    trace_ids = sorted({r["trace_id"] for r in runs if r.get("trace_id")})
+    return [step for t in db(db_name).traces.find({"trace_id": {"$in": trace_ids}}, {"raw_steps": 1})
+            for step in t.get("raw_steps") or [] if step.get("node") == "model"]
 
 
 def holdout_passed(runs: list[dict]) -> int:
@@ -72,7 +84,7 @@ def holdout_passed(runs: list[dict]) -> int:
 def model_id_of(version_id: str, runs: list[dict]) -> str:
     counts = Counter(r["model_id"] for r in runs)
     if not counts:
-        raise LookupError(f"{version_id} has no {SPLIT} runs")
+        raise LookupError(f"{version_id} has no {STORED} runs")
     return counts.most_common(1)[0][0]
 
 
@@ -81,7 +93,7 @@ def record_frames(version_id: str, task: Task, runs: list[dict], db_name: str) -
     seed = task.eval_seeds[0]
     run = next((r for r in runs if r["task_id"] == task.id and r["seed"] == seed), None)
     if run is None:
-        raise LookupError(f"{version_id} has no {SPLIT} run on {task.id} seed {seed}")
+        raise LookupError(f"{version_id} has no {STORED} run on {task.id} seed {seed}")
     if not run["gait"]:
         return None
     result = verifier.evaluate(Gait.model_validate(run["gait"]), task, seed, record=True)
@@ -107,13 +119,14 @@ def capture_swap(
     sides: dict[str, dict] = {}
     for vid in (left, best):  # back to back, left first
         version: Version = run_split(vid, SPLIT, K, tasks=tasks, harness=harnesses[vid],
-                                     db_name=db_name, ckpt_db=ckpt_db)
+                                     db_name=db_name, ckpt_db=ckpt_db, store_as=STORED, fresh=True)
         sides[vid] = {"version": version, "runs": _runs(vid, db_name)}
     for vid, side in sides.items():
         side["frames_id"] = record_frames(vid, shown, side["runs"], db_name)
 
     lm, rm = sides[left]["version"].metrics, sides[best]["version"].metrics
     model_id, right_model_id = (model_id_of(v, sides[v]["runs"]) for v in (left, best))
+    steps = [s for v in (left, best) for s in model_steps(sides[v]["runs"], db_name)]
     captured_at = _now_ms()
     swap = Swap(
         _id=f"swap-{left}-{best}-{captured_at:%Y%m%dT%H%M%S%f}", captured_at=captured_at,
@@ -127,6 +140,7 @@ def capture_swap(
         left_mean_distance_m=lm.mean_distance_m, right_mean_distance_m=rm.mean_distance_m,
         left_cost_per_run_usd=lm.cost_per_run_usd, right_cost_per_run_usd=rm.cost_per_run_usd,
         n=len(sides[left]["runs"]),
+        fresh_calls=bool(steps) and not any(s.get("cached") for s in steps), model_calls=len(steps),
     )
     db(db_name).swaps.insert_one(swap.model_dump(by_alias=True))
     return swap
@@ -136,7 +150,8 @@ def summary_line(s: Swap, n_tasks: int) -> str:
     return (f"{s.id}  {s.left_version} {s.left_holdout}/{n_tasks} vs {s.right_version} "
             f"{s.right_holdout}/{n_tasks} holdout (k {s.k}, {s.model_id} / {s.right_model_id})  "
             f"cost/gait ${s.left_cost_per_run_usd:.4f} vs ${s.right_cost_per_run_usd:.4f}  "
-            f"{len(s.harness_diff)} changed lines")
+            f"{len(s.harness_diff)} changed lines  {s.model_calls} model calls"
+            f"{' (all fresh)' if s.fresh_calls else ''}")
 
 
 def main(argv: list[str] | None = None) -> int:

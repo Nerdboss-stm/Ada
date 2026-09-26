@@ -7,6 +7,10 @@ sha256 of canonical JSON {model_id, messages, tools, params}. LLM_CACHE_MODE=rec
 (default) calls the API on a miss; replay_only raises CacheMiss instead. Transient
 failures retry after 1/2/4/8 s (Retry-After wins when sent); if the primary model
 still fails, the role's `alt` model is tried once through the same loop.
+
+fresh=True is a deliberate live call: no cache lookup, the API is called even under
+replay_only, and the response is not written to the cache, so recorded replays stay as
+they were. Cost and usage are returned as usual (cached=False).
 """
 
 from __future__ import annotations
@@ -186,7 +190,7 @@ def _result(role: str, spec: dict[str, Any], key: str, response: dict[str, Any],
 
 def cached_chat(
     role: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
-    **params: Any,
+    *, fresh: bool = False, **params: Any,
 ) -> ChatResult:
     table = models()
     if role not in table:
@@ -204,11 +208,11 @@ def cached_chat(
         candidates.append((spec, request, prompt_hash(request)))
 
     coll = _collection()
-    for spec, _, key in candidates:
+    for spec, _, key in [] if fresh else candidates:
         hit = coll.find_one({"model_id": spec["id"], "prompt_hash": key})
         if hit is not None:
             return _result(role, spec, key, hit["response"], cached=True)
-    if _mode() == "replay_only":
+    if not fresh and _mode() == "replay_only":
         raise CacheMiss(f"{role}: no cached response for {[k for _, _, k in candidates]}")
 
     errors = []
@@ -221,6 +225,8 @@ def cached_chat(
         except _Fatal as e:
             errors.append(f"{spec['id']}: {e}")
             continue
+        if fresh:
+            return _result(role, spec, key, response, cached=False)
         entry = LlmCacheEntry(
             model_id=spec["id"], prompt_hash=key, request=request, response=response,
             usage=response.get("usage") or {}, ts=datetime.now(timezone.utc),

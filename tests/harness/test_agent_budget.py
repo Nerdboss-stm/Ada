@@ -164,3 +164,23 @@ def test_parallel_holdout_keeps_task_order(monkeypatch):
 
     assert [r["task_id"] for r in results] == [t.id for t in tasks]
     assert len(threads) > 1
+
+
+def test_fresh_reaches_every_model_call_and_a_tag_keeps_its_own_trace(env):
+    fake = turns([READ, PREVIEW, SUBMIT])
+    seen = []
+
+    def model(role, messages, tools=None, **params):
+        seen.append(params.get("fresh"))
+        return fake(role, messages, tools, **params)
+
+    env.monkeypatch.setattr(llm, "cached_chat", model)
+    plain = agent.run_episode(task(), f"{PREFIX}g", HARNESS, db_name=ADA_TEST, ckpt_db=ADA_TEST)
+    assert seen == [False] * 3 and plain.model_calls == 3
+    seen.clear()
+    tagged = agent.run_episode(task(), f"{PREFIX}g", HARNESS, db_name=ADA_TEST, ckpt_db=ADA_TEST,
+                               fresh=True, tag="swap")
+    assert seen == [True] * 3 and tagged.model_calls == 3
+    assert tagged.trace_id == f"{plain.trace_id}-swap"
+    traces = db(ADA_TEST).traces
+    assert traces.count_documents({"trace_id": {"$in": [plain.trace_id, tagged.trace_id]}}) == 2

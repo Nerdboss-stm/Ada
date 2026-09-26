@@ -39,8 +39,8 @@ class FakeOpenRouter:
 
 @pytest.fixture
 def api(monkeypatch):
-    coll = db(ADA_TEST)[COLL]
-    coll.drop()
+    coll = db(ADA_TEST)[COLL]  # [B11] ada_test is shared: clear this file's collection, never drop it
+    coll.delete_many({})
     fake = FakeOpenRouter()
     sleeps: list[float] = []
     monkeypatch.setattr(llm, "_http", httpx.Client(transport=httpx.MockTransport(fake)))
@@ -52,7 +52,7 @@ def api(monkeypatch):
     fake.sleeps = sleeps
     fake.coll = coll
     yield fake
-    coll.drop()
+    coll.delete_many({})
 
 
 def test_second_identical_call_makes_zero_http(api):
@@ -148,3 +148,30 @@ def test_unique_index_and_document_shape(api):
 def test_unknown_role_rejected(api):
     with pytest.raises(ValueError):
         llm.cached_chat("nobody", MSGS)
+
+
+def test_fresh_call_hits_the_api_and_leaves_the_cache_unchanged(api):
+    first = llm.cached_chat("agent_v0", MSGS)
+    before = list(api.coll.find())
+    fresh = llm.cached_chat("agent_v0", MSGS, fresh=True)
+    assert len(api.requests) == 2 and not fresh.cached
+    assert "fresh" not in api.requests[1]
+    assert fresh.prompt_hash == first.prompt_hash and fresh.cost_usd == first.cost_usd
+    assert fresh.usage["total_tokens"] == 1200
+    assert list(api.coll.find()) == before
+
+
+def test_non_fresh_call_still_hits_the_cache_after_a_fresh_one(api):
+    llm.cached_chat("agent_v0", MSGS)
+    llm.cached_chat("agent_v0", MSGS, fresh=True)
+    again = llm.cached_chat("agent_v0", MSGS)
+    assert again.cached and len(api.requests) == 2
+
+
+def test_fresh_call_goes_live_under_replay_only_and_stores_nothing(api, monkeypatch):
+    monkeypatch.setenv("LLM_CACHE_MODE", "replay_only")
+    res = llm.cached_chat("judge", MSGS, fresh=True)
+    assert not res.cached and len(api.requests) == 1
+    assert api.coll.count_documents({}) == 0
+    with pytest.raises(llm.CacheMiss):
+        llm.cached_chat("judge", MSGS)

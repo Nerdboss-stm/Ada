@@ -20,6 +20,8 @@ DocId = Annotated[str, BeforeValidator(str)]
 Usd = Annotated[float, AfterValidator(lambda v: round(v, 6))]
 
 Split = Literal["train", "holdout", "showcase"]
+# [B11] runs only: "swap" runs use holdout tasks but never feed a version's metrics.
+RunSplit = Literal["train", "holdout", "showcase", "swap"]
 RoundStatus = Literal["open", "closed"]
 VersionStatus = Literal["baseline", "frontier", "candidate", "accepted", "rejected"]
 EditOrigin = Literal["model", "probe", "cli"]
@@ -158,7 +160,7 @@ class Run(_Doc):
     id: DocId | None = Field(default=None, alias="_id")
     task_id: str
     seed: int
-    split: Split
+    split: RunSplit
     version_id: str
     model_id: str
     gait: dict[str, Any]
@@ -229,6 +231,8 @@ class Swap(_Doc):
     left_cost_per_run_usd: Usd
     right_cost_per_run_usd: Usd
     n: int  # holdout runs per side (tasks x k)
+    fresh_calls: bool = False  # [B11] every agent model call was live (cached_chat fresh=True)
+    model_calls: int = 0  # [B11] agent model calls across both sides
 
 
 class CostPerGait(_Doc):

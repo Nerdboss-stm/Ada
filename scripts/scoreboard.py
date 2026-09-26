@@ -8,8 +8,10 @@
 - proposals_total: edits proposed by the loop (origin model or probe; ./verify rows excluded).
 - overrated_attempts: proposals rejected with a torque or power reason ("rated torque" or
   "rated motors"; both wordings exist in today's data).
-- physics_rejected: edits whose gate.verifier failed; physics_rejected_judge_passed: of
-  those, the ones whose gate.gpa passed.
+- physics_rejected: edits whose gate.verifier failed on a sanity violation, i.e. the fail
+  event's payload.reason matches SANITY ("no strict improvement" and gait-count failures
+  are not physics) [B11]; physics_rejected_judge_passed: of those, the ones whose
+  gate.gpa passed.
 
 --best defaults to the right_version of the latest swaps document. --round scopes events
 and edits to those rounds; without it every round counts.
@@ -31,6 +33,7 @@ V0 = "v0"
 FRONTIER = "frontier"
 COST_STAGES = ("controller", "gate.gpa", "gate.meta")
 OVERRATED = re.compile(r"rated torque|rated motors", re.IGNORECASE)
+SANITY = re.compile(r"rated torque|rated motors|exploits the simulator|rose above|diverged", re.IGNORECASE)
 
 
 def _now_ms() -> datetime:
@@ -59,6 +62,14 @@ def _edit_ids_with(stage: str, status: str, scope: dict[str, Any], db_name: str)
     return {e for e in db(db_name).events.distinct("edit_id", {**scope, "stage": stage, "status": status}) if e}
 
 
+def _sanity_failed(scope: dict[str, Any], db_name: str) -> set[str]:
+    """Edit ids with a gate.verifier fail event whose reason is a sanity violation."""
+    events = db(db_name).events.find({**scope, "stage": "gate.verifier", "status": "fail"},
+                                     {"edit_id": 1, "payload.reason": 1})
+    return {ev["edit_id"] for ev in events
+            if ev.get("edit_id") and SANITY.search(str((ev.get("payload") or {}).get("reason") or ""))}
+
+
 def build_scoreboard(
     *, best: str | None = None, v0: str = V0, frontier: str = FRONTIER,
     round_ids: list[str] | None = None, db_name: str = ADA,
@@ -72,7 +83,7 @@ def build_scoreboard(
     overrated = sum(e.get("verdict") == "rejected" and bool(OVERRATED.search(e.get("reason") or ""))
                     for e in proposals)
 
-    physics = {str(e["_id"]) for e in proposals} & _edit_ids_with("gate.verifier", "fail", scope, db_name)
+    physics = {str(e["_id"]) for e in proposals} & _sanity_failed(scope, db_name)
     judge_passed = physics & _edit_ids_with("gate.gpa", "pass", scope, db_name)
 
     event_usd = sum(float((ev.get("payload") or {}).get("cost_usd") or 0.0)

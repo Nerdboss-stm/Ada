@@ -18,6 +18,7 @@ from core.contracts import ChatResult, Edit, Metrics, Run, Sanity, Swap, Version
 from core.db import ADA_TEST, db
 from core.events import emit
 from harness.agent import AGENT_STEP, V0_HARNESS
+from harness.agent import thread_id as CS_thread
 from harness.guardrails import VERIFIER_PATH, file_sha256, seed_guardrails
 from scripts import capture_swap as CS
 from scripts import scoreboard as SB
@@ -31,8 +32,9 @@ SWAP_FIELDS = {
     "right_holdout", "left_frames_id", "right_frames_id", "model_id", "right_model_id",
     "verifier_sha", "mujoco_version", "manifest_version", "harness_diff",
     "left_mean_distance_m", "right_mean_distance_m", "left_cost_per_run_usd",
-    "right_cost_per_run_usd", "n",
+    "right_cost_per_run_usd", "n", "fresh_calls", "model_calls",
 }
+FRESH_SEEN: list = []  # the fresh flag of every fake model call
 
 
 def valid_gait() -> dict:
@@ -45,6 +47,7 @@ def valid_gait() -> dict:
 
 def fake_model(role, messages, tools=None, **params):
     """read_task on the first turn, a valid gait on the next; model_id names the role."""
+    FRESH_SEEN.append(params.get("fresh"))
     turn = sum(m["role"] == "assistant" for m in messages)
     name, args = ("read_task", {}) if turn == 0 else ("submit_gait", valid_gait())
     msg = {"role": "assistant", "content": None, "tool_calls": [
@@ -58,6 +61,7 @@ def fake_model(role, messages, tools=None, **params):
 def world(monkeypatch):
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
     monkeypatch.setattr(llm, "cached_chat", fake_model)
+    FRESH_SEEN.clear()
     seed_guardrails(ADA_TEST)
     d = db(ADA_TEST)
     tag = f"t-b9-{uuid.uuid4().hex[:8]}"
@@ -98,6 +102,7 @@ def test_swap_document_fields_runs_and_frames(world):
     rule = "Keep the torso level on slopes."
     right = world.version("r", V0_HARNESS.model_copy(deep=True, update={"rules": [*V0_HARNESS.rules, rule]}))
 
+    before = {v: world.db.versions.find_one({"_id": v}) for v in (left, right)}
     swap = capture(world, left, right)
     doc = world.db.swaps.find_one({"_id": swap.id})
     assert set(doc) == SWAP_FIELDS
@@ -107,8 +112,10 @@ def test_swap_document_fields_runs_and_frames(world):
     assert (swap.left_version, swap.right_version) == (left, right)
     assert swap.n == len(HOLDOUT) * 3
     for vid, passed in ((left, swap.left_holdout), (right, swap.right_holdout)):
-        runs = list(world.db.runs.find({"version_id": vid, "split": "holdout"}))
+        runs = list(world.db.runs.find({"version_id": vid, "split": "swap"}))
         assert len(runs) == swap.n
+        assert world.db.runs.count_documents({"version_id": vid, "split": "holdout"}) == 0
+        assert world.db.versions.find_one({"_id": vid}) == before[vid]  # metrics untouched
         assert passed == CS.holdout_passed(runs) and 0 <= passed <= len(HOLDOUT)
     assert swap.left_holdout == swap.right_holdout  # same gait from the same fake model
     assert swap.left_cost_per_run_usd == pytest.approx(2 * CALL_COST)  # per episode
@@ -117,7 +124,7 @@ def test_swap_document_fields_runs_and_frames(world):
         frames = world.db.frames.find_one({"_id": fid})
         assert frames["kind"] == "showcase" and frames["version_id"] == vid
         run = world.db.runs.find_one({"_id": ObjectId(frames["run_id"])})
-        assert (run["task_id"], run["seed"], run["split"]) == (HOLDOUT[0].id, HOLDOUT[0].eval_seeds[0], "holdout")
+        assert (run["task_id"], run["seed"], run["split"]) == (HOLDOUT[0].id, HOLDOUT[0].eval_seeds[0], "swap")
 
     assert swap.model_id == swap.right_model_id == "test/agent_v0"
     assert all(line[:1] in "+-" for line in swap.harness_diff)
@@ -126,6 +133,32 @@ def test_swap_document_fields_runs_and_frames(world):
     assert swap.verifier_sha == file_sha256(VERIFIER_PATH)
     assert swap.mujoco_version == mujoco.__version__
     assert swap.manifest_version == CS.record.manifest_version()
+    assert swap.model_calls == 2 * len(HOLDOUT) * 2  # two sides, two turns per episode
+    assert swap.fresh_calls and FRESH_SEEN == [True] * swap.model_calls
+
+
+def test_swap_leaves_frozen_holdout_runs_metrics_and_traces_alone(world):
+    left = world.version("l", cost=0.0002)
+    right = world.version("r", cost=0.0003)
+    task = HOLDOUT[0]
+    frozen = Run(task_id=task.id, seed=task.eval_seeds[0], split="holdout", version_id=left, model_id="m",
+                 gait={}, distance_m=1.23, fell=False, sanity=Sanity.model_validate({"pass": True}),
+                 success=True, cost_usd=0.1, tokens=7, trace_id=CS_thread(left, task))
+    world.db.runs.insert_one(frozen.model_dump(by_alias=True, exclude={"id"}))
+    world.db.traces.insert_one({"trace_id": CS_thread(left, task), "raw_steps": [{"node": "baseline"}]})
+    before = {v: world.db.versions.find_one({"_id": v}) for v in (left, right)}
+
+    swap = capture(world, left, right)
+
+    held = list(world.db.runs.find({"version_id": left, "split": "holdout"}, {"_id": 0}))
+    assert held == [frozen.model_dump(by_alias=True, exclude={"id"})]
+    assert world.db.traces.find_one({"trace_id": CS_thread(left, task)})["raw_steps"] == [{"node": "baseline"}]
+    for vid in (left, right):
+        assert world.db.versions.find_one({"_id": vid}) == before[vid]
+        swap_runs = list(world.db.runs.find({"version_id": vid, "split": "swap"}))
+        assert len(swap_runs) == swap.n and all(r["trace_id"].endswith("-swap") for r in swap_runs)
+    assert swap.left_holdout == CS.holdout_passed(list(world.db.runs.find({"version_id": left, "split": "swap"})))
+    assert swap.left_cost_per_run_usd == pytest.approx(2 * CALL_COST)  # from the swap episodes, not v0's 0.0002
 
 
 def test_different_model_goes_first_in_harness_diff(world):
@@ -166,20 +199,28 @@ def test_scoreboard_counts_and_costs(world):
     e3 = edit(3, "probe", "rejected", "no strict improvement: train reliability 0.5 vs parent 0.5", f"{t}-c3")
     e4 = edit(4, "model", "accepted", None, f"{t}-c4")
     e5 = edit(5, "cli", "rejected", "verification: still fails: power 5.0 exceeds Ada's rated motors", None)
+    e6 = edit(6, "model", "rejected", "submitted a gait on 1/3 tasks vs parent 3/3", f"{t}-c6")
+    e7 = edit(7, "model", "rejected", "torso height rose above 0.9 m at 1.20 s", f"{t}-c7")
 
     def ev(stage, status, edit_id=None, **payload):
         emit(stage, status, payload, round_id=rid, edit_id=edit_id, db_name=ADA_TEST)
 
     ev("controller", "info", count=4, cost_usd=0.01)
-    ev("gate.verifier", "fail", e1)
+    ev("gate.verifier", "fail", e1, reason="hip_2 peak torque 1.90x rated torque (150) at 2.10 s")
     ev("gate.gpa", "start", e1)
     ev("gate.gpa", "pass", e1, cost_usd=0.002)
     ev("gate.meta", "pass", e1, cost_usd=0.004)
-    ev("gate.verifier", "fail", e2)
+    ev("gate.verifier", "fail", e2, reason="power 5.0 exceeds Ada's rated motors (1.0)")
     ev("gate.gpa", "fail", e2, cost_usd=0.003)
+    ev("gate.verifier", "fail", e3, reason="no strict improvement: train reliability 0.5 vs parent 0.5")
+    ev("gate.gpa", "pass", e3)  # not physics: excluded even though the judge passed it
+    ev("gate.verifier", "fail", e6, reason="submitted a gait on 1/3 tasks vs parent 3/3")
+    ev("gate.gpa", "pass", e6)
+    ev("gate.verifier", "fail", e7, reason="torso height rose above 0.9 m at 1.20 s")
+    ev("gate.gpa", "fail", e7)
     ev("gate.verifier", "pass", e4)
     ev("gate.gpa", "pass", e4)
-    ev("gate.verifier", "fail", e5)  # ./verify row: excluded
+    ev("gate.verifier", "fail", e5, reason="power 5.0 exceeds Ada's rated motors")  # ./verify row: excluded
     ev("gate.gpa", "pass", e5)
 
     def run(vid, split, cost):
@@ -197,10 +238,10 @@ def test_scoreboard_counts_and_costs(world):
     board = SB.build_scoreboard(best=best, v0=v0, frontier=fr, round_ids=[rid], db_name=ADA_TEST)
     world.made["scoreboard"].append(board.id)
 
-    assert board.proposals_total == 4
+    assert board.proposals_total == 6
     assert board.overrated_attempts == 2
-    assert board.physics_rejected == 2
-    assert board.physics_rejected_judge_passed == 1
+    assert board.physics_rejected == 3  # e1, e2, e7; not e3 (improvement) or e6 (gait count)
+    assert board.physics_rejected_judge_passed == 1  # e1
     assert board.rewrite_cost_usd == pytest.approx(0.01 + 0.002 + 0.004 + 0.003 + 0.0005 * 2 + 0.001)
     assert board.cost_per_gait.model_dump() == {"v0": 0.0002, "frontier": 0.02, "best": 0.0003}
     assert board.best_version == best
