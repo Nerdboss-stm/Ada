@@ -131,6 +131,8 @@ export type Row = {
   n: number;
   costUnits: number; // integer 1/10000 USD as displayed
   reliability: string;
+  /** Holdout terrains passed, as "{n}/6". */
+  holdout: string;
   cost: string;
 };
 
@@ -151,6 +153,7 @@ export function toRow(v: VersionDoc | null | undefined): Row | null {
     n,
     costUnits,
     reliability: `${reliabilityPct}%`,
+    holdout: `${Math.round(r * HOLDOUT_TASKS)}/${HOLDOUT_TASKS}`,
     cost: `$${(costUnits / COST_SCALE).toFixed(4)}`,
   };
 }
@@ -191,4 +194,40 @@ export function claim(frontier: Row | null, best: Row | null): Claim | null {
 /** NOTES.md [B5] wording, word for word. Never "matches", "beats", or "smarter". */
 export function claimLine({ b, f, k }: Claim): string {
   return `${b} of ${HOLDOUT_TASKS} unseen terrains vs the frontier model at ${f} of ${HOLDOUT_TASKS}, at ${k}x lower cost per gait`;
+}
+
+/** USD to 4 places (CLAUDE.md); null when not a finite number. */
+export function formatUsd(x: number | null | undefined): string | null {
+  return typeof x === "number" && Number.isFinite(x) ? `$${x.toFixed(4)}` : null;
+}
+
+/** A version's agent model ids from its runs, joined; "–" when it has none. */
+export function modelLabel(models: Record<string, string[]>, versionId: string): string {
+  const ids = models[versionId] ?? [];
+  return ids.length ? ids.join(", ") : "–";
+}
+
+export type EditCounts = { proposed: number; kept: number; rejected: number };
+
+/**
+ * The live counter: api/cheat's non-cli edits merged with streamed edits by _id (streamed wins),
+ * cli rows excluded (NOTES.md [B9]). Proposed counts every edit, pending ones too.
+ */
+export function editCounts(
+  base: { _id: string; verdict?: string | null; origin?: string | null }[],
+  live: { _id: string; verdict?: string | null; origin?: string | null }[],
+): EditCounts {
+  const byId = new Map<string, { verdict?: string | null; origin?: string | null }>();
+  for (const e of base) byId.set(e._id, e);
+  for (const e of live) byId.set(e._id, { ...byId.get(e._id), ...e });
+  const all = [...byId.values()].filter((e) => e.origin !== "cli");
+  return {
+    proposed: all.length,
+    kept: all.filter((e) => e.verdict === "accepted").length,
+    rejected: all.filter((e) => e.verdict === "rejected").length,
+  };
+}
+
+export function countsLine(c: EditCounts): string {
+  return `edits proposed ${c.proposed} · kept ${c.kept} · rejected ${c.rejected}`;
 }

@@ -10,14 +10,18 @@ import {
   type VersionDoc,
 } from "@/lib/ghosts";
 import { isCheatDoc, latestRejectedEdit, pickCheatDoc, verdictText } from "@/lib/cheat";
+import { overTorqueJoint, type CheatCard } from "@/lib/cheatcard";
 import type { EditDoc } from "@/lib/overlays";
 import type { FramesDoc } from "@/lib/replay";
 
 /** One ghost: a recorded showcase frames doc, keyed by version (or fixture name), oldest first. */
 export type Ghost = { key: string; doc: FramesDoc };
 
-/** A rejected run with a violation frame, played as its own body in bullet time, and its verdict text. */
-export type Cheat = { key: string; doc: FramesDoc & { violation_frame: number }; verdict: string };
+/**
+ * A rejected run with a violation frame, played as its own body in bullet time, its verdict text,
+ * and the joint over the rated torque in that run's recorded peak_torque (null if none known).
+ */
+export type Cheat = { key: string; doc: FramesDoc & { violation_frame: number }; verdict: string; hotJoint: string | null };
 
 export type GhostState = { ghosts: Ghost[]; leader: string | null; cheat: Cheat | null; error: string | null };
 
@@ -27,11 +31,14 @@ export async function fetchFrames(url: string): Promise<FramesDoc> {
   return (await res.json()) as FramesDoc;
 }
 
-function asCheat(key: string, doc: FramesDoc, reason: string | null | undefined): Cheat | null {
+function asCheat(key: string, doc: FramesDoc, reason: string | null | undefined, hotJoint: string | null = null): Cheat | null {
   if (!isCheatDoc(doc)) return null;
   const v = doc.violation_frame as number;
-  return { key, doc: { ...doc, violation_frame: v }, verdict: verdictText(reason, v) };
+  return { key, doc: { ...doc, violation_frame: v }, verdict: verdictText(reason, v), hotJoint };
 }
+
+/** Which rejected run plays as the cheat, and what it says. */
+type CheatTarget = { framesId: string; reason: string | null | undefined; hotJoint: string | null };
 
 /**
  * `?fixtures=` files and `?frames=` documents, in query order; leader by recorded final torso x.
@@ -58,10 +65,9 @@ function useLocalGhosts(sources: { name: string; url: string }[] | null): GhostS
   return state;
 }
 
-/** Stream mode: the latest rejected edit's frames, if they are a cheat; verdict is that edit's reason. */
-function useStreamCheat(edits: EditDoc[]): { cheat: Cheat | null; error: string | null } {
-  const edit = useMemo(() => latestRejectedEdit(edits), [edits]);
-  const framesId = edit?.frames_id ?? null;
+/** The target's frames, if they are a cheat; verdict is the target's reason. */
+function useTargetCheat(target: CheatTarget | null): { cheat: Cheat | null; error: string | null } {
+  const framesId = target?.framesId ?? null;
   const [loaded, setLoaded] = useState<{ id: string; doc: FramesDoc } | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -74,9 +80,11 @@ function useStreamCheat(edits: EditDoc[]): { cheat: Cheat | null; error: string 
       live = false;
     };
   }, [framesId]);
+  const reason = target?.reason;
+  const hotJoint = target?.hotJoint ?? null;
   const cheat = useMemo(
-    () => (edit && loaded && loaded.id === framesId ? asCheat(`cheat:${loaded.id}`, loaded.doc, edit.reason) : null),
-    [edit, loaded, framesId],
+    () => (framesId && loaded && loaded.id === framesId ? asCheat(`cheat:${loaded.id}`, loaded.doc, reason, hotJoint) : null),
+    [loaded, framesId, reason, hotJoint],
   );
   return useMemo(() => ({ cheat, error }), [cheat, error]);
 }
@@ -111,9 +119,13 @@ function useStreamGhosts(versions: VersionDoc[], streamError: string | null): Om
 }
 
 const NO_VERSIONS: VersionDoc[] = [];
-const NO_EDITS: EditDoc[] = [];
 
-export function useGhosts(versions: VersionDoc[], edits: EditDoc[], streamError: string | null): GhostState {
+/**
+ * The cheat card's edit (api/cheat or `?cheatfixture=`) plays as the cheat in every mode. Without
+ * a card: stream mode plays the latest rejected edit with frames; `?fixtures=`/`?frames=` mode
+ * plays the first rejected doc it lists.
+ */
+export function useGhosts(versions: VersionDoc[], edits: EditDoc[], streamError: string | null, card: CheatCard | null = null): GhostState {
   // Stage is client-only (ssr: false), so the query string is available on first render.
   const local = useMemo(() => {
     const q = new URLSearchParams(window.location.search);
@@ -122,9 +134,16 @@ export function useGhosts(versions: VersionDoc[], edits: EditDoc[], streamError:
   }, []);
   const fromLocal = useLocalGhosts(local);
   const fromStream = useStreamGhosts(local === null ? versions : NO_VERSIONS, local === null ? streamError : null);
-  const streamCheat = useStreamCheat(local === null ? edits : NO_EDITS);
-  return useMemo(
-    () => (local ? fromLocal : { ...fromStream, cheat: streamCheat.cheat, error: fromStream.error ?? streamCheat.error }),
-    [local, fromLocal, fromStream, streamCheat],
-  );
+  const target = useMemo((): CheatTarget | null => {
+    if (card) return { framesId: card.frames_id, reason: card.reason, hotJoint: overTorqueJoint(card.peak_torque)?.joint ?? null };
+    if (local) return null;
+    const e = latestRejectedEdit(edits);
+    return e?.frames_id ? { framesId: e.frames_id, reason: e.reason, hotJoint: null } : null;
+  }, [card, local, edits]);
+  const targetCheat = useTargetCheat(target);
+  return useMemo(() => {
+    if (local && !card) return fromLocal;
+    const base = local ? fromLocal : fromStream;
+    return { ...base, cheat: targetCheat.cheat, error: base.error ?? targetCheat.error };
+  }, [local, card, fromLocal, fromStream, targetCheat]);
 }

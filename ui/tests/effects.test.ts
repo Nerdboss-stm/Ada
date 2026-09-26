@@ -9,6 +9,10 @@ import {
   footprintEdges,
   glowIntensity,
   legForceIndex,
+  HOT_EMISSIVE_LINEAR,
+  HOT_GLOW_MAX,
+  HOT_GLOW_MIN,
+  hotGlowIntensity,
 } from "../lib/effects.ts";
 import type { Frame, GeomPose, Manifest } from "../lib/replay.ts";
 
@@ -136,4 +140,17 @@ test("footprints appear on their frame, fade linearly over 2 s, and clear when t
   assert.deepEqual(activeFootprints(edges, fps, 0), []);
   assert.deepEqual(activeFootprints(edges, 0, 1), []);
   assert.deepEqual(activeFootprints(edges, fps, -1), []);
+});
+
+test("the cheat's hot joint: lit at rest, blooms at full recorded force, and stays red", () => {
+  assert.equal(hotGlowIntensity(0), HOT_GLOW_MIN);
+  assert.equal(hotGlowIntensity(undefined), HOT_GLOW_MIN);
+  assert.equal(hotGlowIntensity(Number.NaN), HOT_GLOW_MIN);
+  assert.equal(hotGlowIntensity(-1), HOT_GLOW_MAX);
+  assert.equal(hotGlowIntensity(3), HOT_GLOW_MAX);
+  const [r, g, b] = HOT_EMISSIVE_LINEAR.map((c) => c * HOT_GLOW_MAX);
+  // Rec. 709 luminance of the linear emissive clears the scene's 1.4 bloom threshold...
+  assert.ok(0.2126 * r + 0.7152 * g + 0.0722 * b > 1.4);
+  // ...while green and blue stay far below red, so tone mapping cannot wash it to white.
+  assert.ok(g < 0.25 && b < 0.25);
 });

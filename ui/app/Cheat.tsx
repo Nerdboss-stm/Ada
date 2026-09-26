@@ -5,8 +5,10 @@ import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { CHEAT_RED, LANE_Y, cheatState, cheatTorso, type CheatTimeline } from "@/lib/cheat";
+import { jointGeoms } from "@/lib/cheatcard";
+import { legForceIndex } from "@/lib/effects";
 import type { Manifest } from "@/lib/replay";
-import { Body, playbackTime, useGeometries, type Epoch } from "./Ghosts";
+import { Body, playbackTime, useGeometries, type Epoch, type HotJoint } from "./Ghosts";
 import type { Cheat } from "./useGhosts";
 
 const NO_FORCES: number[] = [];
@@ -17,8 +19,9 @@ const LEFT_OF = "translate(calc(-100% - 64px), -50%)";
 /**
  * SPEC §6 "The cheat": the rejected run as its own body in red wireframe, in its own lane beside
  * the leader, on its own clock (0.1× through bullet time; lib/cheat.ts). Only recorded frames are
- * shown. Basic material well under the bloom threshold: the cheat never blooms. Goes inside the
- * z-up group.
+ * shown. Basic material well under the bloom threshold: the wireframe never blooms. During bullet
+ * time only, the over-torque joint (cheat.hotJoint, from the run's recorded peak_torque) glows
+ * red from its recorded force. Goes inside the z-up group.
  */
 export function CheatBody({
   manifest,
@@ -35,6 +38,11 @@ export function CheatBody({
   const material = useMemo(() => new THREE.MeshBasicMaterial({ color: CHEAT_RED, wireframe: true }), []);
   useEffect(() => () => material.dispose(), [material]);
   const ghost = useMemo(() => ({ key: cheat.key, doc: cheat.doc }), [cheat]);
+  const hot = useMemo((): HotJoint | undefined => {
+    if (!cheat.hotJoint) return undefined;
+    const index = jointGeoms(legForceIndex(manifest), manifest.force_joints, cheat.hotJoint);
+    return index.some((i) => i >= 0) ? { index, active: (t) => cheatState(timeline, t).bulletTime } : undefined;
+  }, [manifest, cheat.hotJoint, timeline]);
   return (
     <group position={[0, LANE_Y, 0]}>
       <Body
@@ -46,6 +54,7 @@ export function CheatBody({
         frameAt={(t) => cheatState(timeline, t).frame}
         epoch={epoch}
         material={material}
+        hot={hot}
       />
     </group>
   );
@@ -90,4 +99,29 @@ export function CheatVerdict({ cheat, timeline, epoch }: { cheat: Cheat; timelin
       </Html>
     </group>
   );
+}
+
+/**
+ * Reports whether the cheat card is up (from the start of bullet time until the camera is back on
+ * the leader) and whether its reason line shows (with the violation frame, as the floating verdict
+ * does). Called on change only; the card lives outside the canvas.
+ */
+export function CheatCardDriver({
+  timeline,
+  epoch,
+  onState,
+}: {
+  timeline: CheatTimeline;
+  epoch: Epoch;
+  onState: (card: boolean, reason: boolean) => void;
+}) {
+  const last = useRef<string | null>(null);
+  useFrame(({ clock }) => {
+    const s = cheatState(timeline, playbackTime(epoch, clock.elapsedTime));
+    const key = `${s.card}:${s.card && s.verdict}`;
+    if (key === last.current) return;
+    last.current = key;
+    onState(s.card, s.card && s.verdict);
+  });
+  return null;
 }

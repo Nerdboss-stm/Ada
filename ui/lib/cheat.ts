@@ -94,6 +94,10 @@ export type CheatState = {
   /** Orbit progress 0..1. */
   orbit: number;
   verdict: boolean;
+  /** Recorded time is playing at 0.1× (the red joint glows only now). */
+  bulletTime: boolean;
+  /** The cheat card is up: from the start of bullet time until the camera is back on the leader. */
+  card: boolean;
 };
 
 /** Everything the cheat body, camera, and verdict need at shared playback time t. */
@@ -111,7 +115,9 @@ export function cheatState(tl: CheatTimeline, t: number): CheatState {
   const orbit = orbitWall > 0 ? Math.min(1, Math.max(0, (w - tl.slowFrom - tl.easeIn) / orbitWall)) : 1;
   // Appears when the violation frame is on screen, stays until the camera is back on the leader.
   const verdict = frame >= tl.violationFrame && w >= tl.slowFrom && w < back;
-  return { w, frame, camWeight, orbit, verdict };
+  const bulletTime = w >= tl.slowFrom && w < slowEnd;
+  const card = w >= tl.slowFrom && w < back;
+  return { w, frame, camWeight, orbit, verdict, bulletTime, card };
 }
 
 /** The cheat's recorded torso (MuJoCo) in its lane, in three's y-up world. */

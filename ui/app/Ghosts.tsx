@@ -14,7 +14,7 @@ import {
   type Vec3,
 } from "@/lib/ghosts";
 import { cheatState, cheatTorso, orbitCamera, type CheatTimeline } from "@/lib/cheat";
-import { WARM, glowIntensity, legForceIndex } from "@/lib/effects";
+import { HOT_EMISSIVE_LINEAR, HOT_GLOW_MIN, WARM, glowIntensity, hotGlowIntensity, legForceIndex } from "@/lib/effects";
 import { formatMeters } from "@/lib/overlays";
 import { geomShape, poseParts, type Manifest } from "@/lib/replay";
 import type { Cheat, Ghost } from "./useGhosts";
@@ -83,10 +83,22 @@ function makeGlowMaterial(): THREE.MeshPhysicalMaterial {
   return m;
 }
 
+/** The over-torque joint during bullet time: solid, red emissive from the recorded force (lib/effects.ts). */
+function makeHotMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: "#000000", metalness: 0, roughness: 1, toneMapped: false });
+  m.emissive.setRGB(...HOT_EMISSIVE_LINEAR);
+  m.emissiveIntensity = HOT_GLOW_MIN;
+  return m;
+}
+
+/** Geoms driven by one joint (`index` per geom: force index or -1) glow red while `active(t)`. */
+export type HotJoint = { index: number[]; active: (t: number) => boolean };
+
 /**
  * One recorded run. Poses are raw MuJoCo z-up; the parent group does the only axis rotation.
  * `frameAt` maps shared playback time to the recorded frame shown; `material`, when given,
- * replaces the ghost/leader material (the cheat's red wireframe).
+ * replaces the ghost/leader material (the cheat's red wireframe). `hot`, when given, swaps the
+ * over-torque joint's geoms to a red glow while it is active.
  */
 export function Body({
   ghost,
@@ -97,6 +109,7 @@ export function Body({
   frameAt,
   epoch,
   material: override,
+  hot,
 }: {
   ghost: Ghost;
   geometries: THREE.BufferGeometry[];
@@ -106,6 +119,7 @@ export function Body({
   frameAt: (t: number) => number;
   epoch: Epoch;
   material?: THREE.Material;
+  hot?: HotJoint;
 }) {
   const refs = useRef<(THREE.Mesh | null)[]>([]);
   const own = useMemo(() => (override ? null : makeMaterial(leader, color)), [override, leader, color]);
@@ -117,15 +131,24 @@ export function Body({
     [geometries, leader, forceIndex],
   );
   useEffect(() => () => glow.forEach((m) => m?.dispose()), [glow]);
+  const hotMats = useMemo(() => geometries.map((_, k) => (hot && (hot.index[k] ?? -1) >= 0 ? makeHotMaterial() : null)), [geometries, hot]);
+  useEffect(() => () => hotMats.forEach((m) => m?.dispose()), [hotMats]);
 
   useFrame(({ clock }) => {
-    const frame = ghost.doc.frames[frameAt(playbackTime(epoch, clock.elapsedTime))];
+    const t = playbackTime(epoch, clock.elapsedTime);
+    const frame = ghost.doc.frames[frameAt(t)];
+    const hotNow = hot ? hot.active(t) : false;
     const geoms = frame?.geoms ?? [];
     for (let g = 0; g < geoms.length; g++) {
       const mesh = refs.current[g];
       if (!mesh) continue;
       if (leader && forceIndex[g] >= 0) {
         (mesh.material as THREE.MeshPhysicalMaterial).emissiveIntensity = glowIntensity(frame.forces[forceIndex[g]]);
+      }
+      const hm = hotMats[g];
+      if (hm && hot) {
+        mesh.material = hotNow ? hm : material;
+        if (hotNow) (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = hotGlowIntensity(frame.forces[hot.index[g]]);
       }
       const { pos, quat } = poseParts(geoms[g]);
       mesh.position.set(pos[0], pos[1], pos[2]);

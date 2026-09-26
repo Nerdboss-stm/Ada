@@ -4,7 +4,8 @@ import { useCallback, useMemo, useRef } from "react";
 import { OrbitControls } from "@react-three/drei";
 import { cheatTimeline } from "@/lib/cheat";
 import { cycleSeconds } from "@/lib/ghosts";
-import { CheatBody, CheatVerdict } from "./Cheat";
+import { CheatBody, CheatCardDriver, CheatVerdict } from "./Cheat";
+import CheatCard from "./CheatCard";
 import { Footprints } from "./Footprints";
 import { GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
 import Overlays from "./Overlays";
@@ -13,6 +14,7 @@ import { SoundCues } from "./SoundCues";
 import AttemptsStage from "./Attempts";
 import SwapStage from "./Swap";
 import { useAdaStream } from "./useAdaStream";
+import { useCheat } from "./useCheat";
 import { useGhosts } from "./useGhosts";
 
 /** One route (SPEC §6): `?mode=swap` is v0 vs the best harness; `?mode=attempts` is the harness's bets; everything else is the demo. */
@@ -26,7 +28,16 @@ export default function Stage() {
 function DemoStage() {
   const { manifest, error: loadError } = useManifest();
   const stream = useAdaStream();
-  const { ghosts: loaded, leader, cheat: loadedCheat, error: ghostError } = useGhosts(stream.versions, stream.edits, stream.error);
+  const cheatData = useCheat(stream.edits);
+  const card = cheatData.doc?.card ?? null;
+  const { ghosts: loaded, leader, cheat: loadedCheat, error: ghostError } = useGhosts(stream.versions, stream.edits, stream.error, card);
+  const cardRef = useRef<HTMLElement | null>(null);
+  const reasonRef = useRef<HTMLElement | null>(null);
+  // Written straight to the DOM when bullet time starts and ends; React never re-renders for it.
+  const showCardState = useCallback((cardUp: boolean, reasonUp: boolean) => {
+    if (cardRef.current) cardRef.current.style.visibility = cardUp ? "visible" : "hidden";
+    if (reasonRef.current) reasonRef.current.style.visibility = reasonUp ? "visible" : "hidden";
+  }, []);
   const epoch = useRef<number | null>(null);
   const distanceRef = useRef<HTMLSpanElement | null>(null);
   // Written straight to the DOM every recorded frame; React never re-renders for it.
@@ -51,8 +62,10 @@ function DemoStage() {
   const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
   const others = useMemo(() => ghosts.filter((g) => g.key !== leader), [ghosts, leader]);
   const mismatched = manifest ? loaded.length - ghosts.length + (loadedCheat && !cheat ? 1 : 0) : 0;
+  // The card belongs to the cheat that is playing: its edit's frames, loaded and playable.
+  const showCard = card !== null && cheat !== null && cheat.cheat.key === `cheat:${card.frames_id}`;
   const error =
-    loadError ?? ghostError ?? stream.error ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
+    loadError ?? ghostError ?? stream.error ?? cheatData.error ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
 
   return (
     <div className="relative h-dvh w-full" style={{ background: BG }}>
@@ -65,7 +78,8 @@ function DemoStage() {
           </>
         }
       >
-        {cheat && <CheatVerdict cheat={cheat.cheat} timeline={cheat.timeline} epoch={epoch} />}
+        {cheat && !showCard && <CheatVerdict cheat={cheat.cheat} timeline={cheat.timeline} epoch={epoch} />}
+        {cheat && showCard && <CheatCardDriver timeline={cheat.timeline} epoch={epoch} onState={showCardState} />}
         {orbit ? (
           <OrbitControls makeDefault target={[1.2, 0.4, -1.5]} enableDamping />
         ) : (
@@ -82,7 +96,11 @@ function DemoStage() {
         versions={stream.versions}
         edits={stream.edits}
         events={stream.events}
+        spine={cheatData.doc?.spine ?? null}
       />
+      {showCard && card && cheatData.doc && (
+        <CheatCard card={card} counter={cheatData.doc.counter} fixture={!!cheatData.doc.fixture} cardRef={cardRef} reasonRef={reasonRef} />
+      )}
       {ghosts.length === 0 && !error && (
         <p className="pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-lg font-medium tracking-wide text-[#7fb7ff]/80">
           Waiting for Ada&rsquo;s first recorded run

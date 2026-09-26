@@ -2,13 +2,18 @@
 
 import { useMemo, type CSSProperties, type RefObject } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import type { CheatSpine } from "@/lib/cheatcard";
 import type { VersionDoc } from "@/lib/ghosts";
 import {
   claim,
   claimLine,
+  countsLine,
+  editCounts,
   formatDelta,
+  formatUsd,
   gateCells,
   latestEdit,
+  modelLabel,
   oldToNew,
   pickBest,
   pickFrontier,
@@ -112,38 +117,58 @@ function EditCard({ edit, events }: { edit: EditDoc | null; events: AdaEvent[] }
   );
 }
 
-function RowLine({ label, row, color }: { label: string; row: Row | null; color: string }) {
+function RowLine({ label, row, model, color }: { label: string; row: Row | null; model: string; color: string }) {
   return (
     <tr style={{ color }}>
       <td className="pr-4">{label}</td>
-      <td className="pr-4 text-right">{row ? row.reliability : "–"}</td>
+      <td className="pr-4" data-testid="spine-model">
+        {row ? model : "–"}
+      </td>
+      <td className="pr-4 text-right">{row ? row.holdout : "–"}</td>
       <td className="pr-4 text-right">{row ? `n ${row.n}` : "–"}</td>
-      <td className="text-right">{row ? `${row.cost} a run` : "–"}</td>
+      <td className="text-right">{row ? `${row.cost} per gait` : "–"}</td>
     </tr>
   );
 }
 
-function Spine({ versions }: { versions: VersionDoc[] }) {
+const NO_MODELS: Record<string, string[]> = {};
+
+function Spine({ versions, edits, spine }: { versions: VersionDoc[]; edits: EditDoc[]; spine: CheatSpine | null }) {
   const frontier = useMemo(() => toRow(pickFrontier(versions)), [versions]);
   const best = useMemo(() => toRow(pickBest(versions)), [versions]);
+  const counts = useMemo(() => (spine ? editCounts(spine.edits, edits) : null), [spine, edits]);
   if (!frontier && !best) return null;
   const earned = claim(frontier, best);
+  const models = spine?.models ?? NO_MODELS;
+  const rewrite = formatUsd(spine?.rewrite_cost_usd);
   return (
     <section className={`absolute right-6 top-5 px-4 py-3 text-base tabular-nums ${glass}`} data-testid="spine">
       <table>
         <thead>
           <tr className="text-xs" style={{ color: MUTED }}>
             <th className="pr-4 text-left font-normal">version</th>
+            <th className="pr-4 text-left font-normal">agent model</th>
             <th className="pr-4 text-right font-normal">holdout</th>
             <th className="pr-4 text-right font-normal">runs</th>
-            <th className="text-right font-normal">cost</th>
+            <th className="text-right font-normal">cost per gait</th>
           </tr>
         </thead>
         <tbody>
-          <RowLine label={frontier ? `frontier ${frontier.versionId} · frozen` : "frontier · none"} row={frontier} color={FROZEN} />
-          <RowLine label={best ? `best ${best.versionId}` : "best · none"} row={best} color={INK} />
+          <RowLine
+            label={frontier ? `frontier ${frontier.versionId} · frozen` : "frontier · none"}
+            row={frontier}
+            model={frontier ? modelLabel(models, frontier.versionId) : "–"}
+            color={FROZEN}
+          />
+          <RowLine label={best ? `best ${best.versionId}` : "best · none"} row={best} model={best ? modelLabel(models, best.versionId) : "–"} color={INK} />
         </tbody>
       </table>
+      {(rewrite || counts) && (
+        <div className="mt-2 flex flex-wrap gap-x-4 text-sm" style={{ color: MUTED }}>
+          {rewrite && <span data-testid="rewrite-cost">rewrite cost {rewrite}</span>}
+          {counts && <span data-testid="edit-counts">{countsLine(counts)}</span>}
+        </div>
+      )}
       {earned && (
         <p className="mt-2 font-medium" style={{ color: CLAIM }} data-testid="claim">
           {claimLine(earned)}
@@ -171,18 +196,20 @@ export default function Overlays({
   versions,
   edits,
   events,
+  spine,
 }: {
   leaderVersion: string | null;
   distanceRef: RefObject<HTMLSpanElement | null>;
   versions: VersionDoc[];
   edits: EditDoc[];
   events: AdaEvent[];
+  spine: CheatSpine | null;
 }) {
   const edit = useMemo(() => latestEdit(edits), [edits]);
   return (
     <div className="pointer-events-none absolute inset-0 font-sans">
       <TopLeft leaderVersion={leaderVersion} distanceRef={distanceRef} />
-      <Spine versions={versions} />
+      <Spine versions={versions} edits={edits} spine={spine} />
       <EditCard edit={edit} events={events} />
       <Qr />
     </div>

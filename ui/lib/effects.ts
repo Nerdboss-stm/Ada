@@ -39,6 +39,20 @@ export function glowIntensity(force: number | undefined): number {
   return GLOW_MAX * Math.min(1, Math.abs(force));
 }
 
+/**
+ * The cheat's over-torque joint during bullet time. Linear emissive kept almost pure red so ACES
+ * (app/Scene.tsx Post) leaves it red rather than washing it to white; at full recorded force its
+ * luminance (0.2126 × 7 + small G, B) clears the 1.4 bloom threshold, at rest it stays lit.
+ */
+export const HOT_EMISSIVE_LINEAR: [number, number, number] = [1, 0.03, 0.02];
+export const HOT_GLOW_MIN = 1;
+export const HOT_GLOW_MAX = 7;
+
+export function hotGlowIntensity(force: number | undefined): number {
+  const f = typeof force === "number" && Number.isFinite(force) ? Math.min(1, Math.abs(force)) : 0;
+  return HOT_GLOW_MIN + (HOT_GLOW_MAX - HOT_GLOW_MIN) * f;
+}
+
 /** A contact rising edge: frame `frame` is the first touching frame; x, y are that ankle geom's recorded position. */
 export type FootprintEdge = { frame: number; leg: number; x: number; y: number };
 

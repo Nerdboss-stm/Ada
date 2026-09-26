@@ -200,3 +200,22 @@ test("the cheat's lane and orbit: beside the leader, once around the torso, look
   close(start.pos[0] - c[0], -(half.pos[0] - c[0]));
   assert.ok(start.pos[1] > c[1]);
 });
+
+test("bullet time flag covers exactly the 0.1× stretch; the card stays up until the camera is back", () => {
+  const t = tl();
+  const slowEnd = t.slowFrom + t.slowWall;
+  assert.equal(cheatState(t, t.slowFrom - 0.01).bulletTime, false);
+  assert.equal(cheatState(t, t.slowFrom - 0.01).card, false);
+  assert.equal(cheatState(t, t.slowFrom).bulletTime, true);
+  assert.equal(cheatState(t, t.slowFrom).card, true);
+  assert.equal(cheatState(t, slowEnd - 0.01).bulletTime, true);
+  assert.equal(cheatState(t, slowEnd).bulletTime, false);
+  assert.equal(cheatState(t, slowEnd + RETURN_S - 0.01).card, true);
+  assert.equal(cheatState(t, slowEnd + RETURN_S).card, false);
+  // The red joint only ever shows while recorded time runs at 0.1×.
+  for (let w = 0; w < t.loop; w += 1 / 240) {
+    const s = cheatState(t, w);
+    if (s.bulletTime && w + 0.01 < slowEnd) close(recordedTime(t, w + 0.01) - recordedTime(t, w), 0.01 * SLOW, 1e-9);
+    if (s.bulletTime) assert.ok(s.card);
+  }
+});

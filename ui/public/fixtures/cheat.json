@@ -1,0 +1,36 @@
+{
+  "fixture": true,
+  "_note": "fixture: hand-written for the cheat card until a rejected over-rated edit has frames with a violation_frame. frames_id is the real flail frames document (run fixture-flail, violation frame 19). rationale and reason are copied word for word from edit r-20260926T163653-41e812.e0; the quote and peak_torque are made up (that run's trace has no assistant words and no peak_torque). spine.models and spine.edits are copied from today's runs and edits; rewrite_cost_usd is made up. counter matches today's count.",
+  "card": {
+    "edit_id": "fixture-cheat",
+    "rationale": "More attempts allow iteration with preview feedback to find a valid, farther-moving gait.",
+    "reason": "power 1.5 exceeds Ada's rated motors (1.0)",
+    "frames_id": "ffc64b4bfe41b185e9157074",
+    "quote": "A stronger stride should carry Ada farther up this slope.",
+    "peak_torque": {
+      "hip_1": 3.2,
+      "ankle_1": 0.71,
+      "hip_2": 0.64,
+      "ankle_2": 0.58,
+      "hip_3": 0.66,
+      "ankle_3": 0.52,
+      "hip_4": 0.61,
+      "ankle_4": 0.49
+    },
+    "model_id": "openai/gpt-6-luna"
+  },
+  "counter": { "overrated": 1, "accepted": 0, "source": "count" },
+  "spine": {
+    "models": {
+      "v0": ["openai/gpt-6-luna"],
+      "v1": ["openai/gpt-6-luna"],
+      "v2": ["openai/gpt-6-luna"],
+      "frontier": ["openai/gpt-6-sol-pro"]
+    },
+    "rewrite_cost_usd": 0.4123,
+    "edits": [
+      { "_id": "r-20260926T163653-41e812.e0", "verdict": "rejected", "origin": "model" },
+      { "_id": "r-20260926T163653-41e812.e1", "verdict": "accepted", "origin": "model" }
+    ]
+  }
+}

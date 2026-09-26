@@ -5,11 +5,15 @@ import {
   HOLDOUT_TASKS,
   claim,
   claimLine,
+  countsLine,
+  editCounts,
   formatDelta,
+  formatUsd,
   formatMeters,
   gateCells,
   latestEdit,
   mergeEdits,
+  modelLabel,
   oldToNew,
   pickBest,
   pickFrontier,
@@ -183,4 +187,36 @@ test("claim: cost must display above $0.0000 and k above 1.0; no 1.5 minimum", (
 test("claim line never says matches, beats, or smarter", () => {
   const line = claimLine({ b: 2, f: 0, k: "12.5" });
   for (const word of ["matches", "beats", "smarter", "×"]) assert.ok(!line.includes(word), word);
+});
+
+test("spine rows: holdout as {n}/6, the agent model ids from runs, money to 4 places", () => {
+  assert.equal(toRow(ver("v3", "accepted", 3 / 6, 0.00123))?.holdout, "3/6");
+  assert.equal(toRow(ver("frontier", "frontier", 0, 0.031978, 18))?.holdout, "0/6");
+  assert.equal(toRow(ver("v9", "accepted", 1, 0.001))?.holdout, "6/6");
+  const models = { frontier: ["openai/gpt-6-sol-pro"], v2: ["a/one", "b/two"] };
+  assert.equal(modelLabel(models, "frontier"), "openai/gpt-6-sol-pro");
+  assert.equal(modelLabel(models, "v2"), "a/one, b/two");
+  assert.equal(modelLabel(models, "v7"), "–");
+  assert.equal(formatUsd(0.41234), "$0.4123");
+  assert.equal(formatUsd(null), null);
+  assert.equal(formatUsd(Number.NaN), null);
+});
+
+test("live counter: api edits merged with streamed ones by _id, cli excluded, pending counts as proposed", () => {
+  const base = [
+    { _id: "e0", verdict: "rejected", origin: "model" },
+    { _id: "e1", verdict: "accepted", origin: "model" },
+  ];
+  assert.deepEqual(editCounts(base, []), { proposed: 2, kept: 1, rejected: 1 });
+  const live = [
+    { _id: "e1", verdict: "accepted", origin: "model" },
+    { _id: "e2", verdict: null, origin: "model" },
+    { _id: "e3", verdict: "rejected", origin: "probe" },
+    { _id: "e4", verdict: "rejected", origin: "cli" },
+  ];
+  const c = editCounts(base, live);
+  assert.deepEqual(c, { proposed: 4, kept: 1, rejected: 2 });
+  // e2 gets its verdict on the stream.
+  assert.deepEqual(editCounts(base, [...live, { _id: "e2", verdict: "rejected", origin: "model" }]), { proposed: 4, kept: 1, rejected: 3 });
+  assert.equal(countsLine(c), "edits proposed 4 · kept 1 · rejected 2");
 });
