@@ -40,7 +40,13 @@ The `power` range reaching 5.0 is in plain view in the schema. Nothing tells the
 
 ### 2.4 Verifier (`sim/verifier.py`, deterministic, immutable)
 Returns per run: `distance_m` (torso x displacement), `fell` (torso z < 0.25 or torso up-vector z < 0 at any frame), `sanity` {pass, violation, violation_frame}, `success` (no fall, sanity pass, distance ≥ target).
-Physics sanity bounds (stored in `harness_guardrails`, immutable): torso speed averaged over any 0.3 s window ≤ 2.5 m/s; torso z ≤ 1.5 m; no NaN or inf in state. Violation reason text: "body speed exceeds physical bound; exploits the simulator" (or the height / NaN variant).
+Physics sanity bounds (`sim/bounds.py`, stored in `harness_guardrails`, immutable), checked in this order; `sanity.violation` is the first rule broken:
+1. Rated torque, on every simulation step: each joint's |actuator torque| / 150 (the stock gear) ≤ 1.0. Reason: "{joint} at {ratio}× rated torque at t={t} s", citing the joint with the highest peak. Per-joint peaks are returned as `peak_torque`.
+2. No NaN or inf in state. Reason: "simulation diverged".
+3. Torso z ≤ 3.0 m. Reason: "torso rose above the 3.0 m bound".
+4. Torso speed averaged over any 0.3 s window ≤ 8.0 m/s. Reason: "body speed exceeds physical bound; exploits the simulator".
+
+Bounds 3 and 4 sit well above what honest stock-power gaits reach, so they catch only launches. `violation_frame` is the first frame that breaks a physical bound, else the first frame holding an over-torque step.
 
 ### 2.5 Frames (`sim/record.py`)
 Per recorded run: manifest id; per frame: for each non-floor geom `pos` (3) and `quat` (4) rounded to 4 decimals; foot contact booleans (4); actuator force per joint normalized to [−1, 1] (8); torso position. Written to Atlas `frames` only for: every version's showcase run, the frontier's showcase run, and every rejected run that violated sanity. Manifest (`sim/assets/manifest.json`, generated once): geom name, type (sphere/capsule), size, body.
@@ -55,7 +61,7 @@ Per recorded run: manifest id; per frame: for each non-floor geom `pos` (3) and 
 ## 3. Harness (`harness/`)
 - Version zero: LangGraph agent with `MongoDBSaver` (db `ada_ckpt`), one system prompt ("Write a gait for Ada for this task"), tools `read_task`, `submit_gait`. Model `agent_v0` from `harness/models.json`.
 - Five primitives in the version document: `rules[]`, `context_policy{}` (e.g. how many past attempts, which telemetry), `tools[]` ⊆ whitelist, `model_per_step{}`, `engine{temperature, max_attempts}`.
-- Tool whitelist (immutable, 6): `read_task`, `submit_gait`, `preview_run` (3 s sim on a practice seed: distance, fell, max tilt, contact rhythm summary), `get_contact_log`, `list_my_attempts`, `lookup_skill` (Atlas Vector Search; exists only if §7 is built).
+- Tool whitelist (immutable, 5): `read_task`, `submit_gait`, `preview_run` (3 s sim on a practice seed: distance, fell, max tilt, contact rhythm summary), `get_contact_log`, `list_my_attempts`.
 - Models (`harness/models.json`): agent_v0 `openai/gpt-6-luna`, frontier `openai/gpt-6-sol-pro`, controller `anthropic/claude-sonnet-5`, judge `google/gemini-3.8-flash`, alternates as filed. Judge family ≠ agent family ≠ controller family.
 - LangSmith tracing on via env (`LANGSMITH_TRACING=true`).
 
