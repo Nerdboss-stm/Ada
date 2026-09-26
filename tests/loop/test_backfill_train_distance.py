@@ -1,4 +1,5 @@
-"""scripts.backfill_train_distance: gate-subset train mean, None when a task had no gait."""
+"""scripts.backfill_train_distance: gate-subset train mean; a run with no gait or a physics
+violation counts as -target_m (A15)."""
 
 import uuid
 from datetime import datetime, timezone
@@ -45,19 +46,21 @@ def world():
     adb.runs.delete_many({"version_id": {"$in": list(ids.values())}})
 
 
-def test_backfill_sets_gate_mean_or_none(world):
+def test_backfill_sets_gate_mean(world):
     ids, tasks, adb = world
     rows = {r["version_id"]: r for r in backfill(ADA_TEST, ids=list(ids.values()))}
 
     assert (rows[ids["full"]]["status"], rows[ids["full"]]["train_mean_distance_m"]) == ("set", 3.5)
-    assert (rows[ids["gap"]]["status"], rows[ids["gap"]]["train_mean_distance_m"]) == ("set", None)
+    gap_m = round((2 * sum(1.0 + i for i in range(len(tasks)) if i != 2) - 2 * tasks[2].target_m)
+                  / (2 * len(tasks)), 4)
+    assert (rows[ids["gap"]]["status"], rows[ids["gap"]]["train_mean_distance_m"]) == ("set", gap_m)
     assert rows[ids["gap"]]["gaits"] == len(tasks) - 1
     assert rows[ids["none"]]["status"] == "skipped"
 
     full = Version.model_validate(adb.versions.find_one({"_id": ids["full"]}))
     assert full.metrics.train_mean_distance_m == 3.5 and full.metrics.mean_distance_m == 7.0
     gap = adb.versions.find_one({"_id": ids["gap"]})
-    assert "train_mean_distance_m" in gap["metrics"] and gap["metrics"]["train_mean_distance_m"] is None
+    assert gap["metrics"]["train_mean_distance_m"] == gap_m
     assert "train_mean_distance_m" not in adb.versions.find_one({"_id": ids["none"]})["metrics"]
 
 

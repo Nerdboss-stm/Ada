@@ -4,8 +4,8 @@
 
 For every versions document with metrics: its train runs on the six gate tasks and the first
 K evaluation seeds, the same subset the gate scores children on, so the leader compares like
-with like. The value is their mean distance, or None when any gate task has no run carrying a
-submitted gait (a version that never submitted cannot lead on distance). A version missing
+with like. The value is their mean distance scored as the gate scores it (A15): a run that
+violated physics or submitted no gait counts as -target_m. A version missing
 train runs on any gate task is skipped and left unchanged. Holdout runs are never read.
 Prints one line per version.
 """
@@ -17,7 +17,7 @@ import sys
 from typing import Any
 
 from core.db import ADA, db
-from gate.verifier_stage import gait_count, gate_tasks, score, train_mean_distance, train_runs
+from gate.verifier_stage import gait_count, gate_tasks, score, train_runs
 
 
 def backfill(db_name: str = ADA, ids: list[str] | None = None, dry_run: bool = False,
@@ -36,7 +36,7 @@ def backfill(db_name: str = ADA, ids: list[str] | None = None, dry_run: bool = F
                         "gaits": None})
             continue
         gaits = gait_count(runs_by_task)
-        value = train_mean_distance(score(runs_by_task)["mean_distance_m"], gaits, len(tasks))
+        value = score(runs_by_task)["mean_distance_m"]
         if not dry_run:
             db(db_name).versions.update_one(
                 {"_id": vid}, {"$set": {"metrics.train_mean_distance_m": value}})

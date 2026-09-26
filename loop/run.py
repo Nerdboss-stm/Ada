@@ -3,8 +3,8 @@
     python -m loop.run --rounds N [--budget-usd 3.0] [--budget-s 600] [--db ada]
 
 The leader is the baseline or accepted version with the highest train_reliability, then the
-highest metrics.train_mean_distance_m (None, as for a version that left a gate task without a
-gait, ranks below every distance), then the lower version number. Holdout numbers are never
+highest metrics.train_mean_distance_m (None, as for a version with no gate-scored train mean,
+ranks below every distance), then the lower version number. Holdout numbers are never
 read. Each round prints one line: round id, head in -> head out, accepted, rejected, spend,
 seconds. An exception stops the run; loop.actuator.run_round has already closed that round,
 and its line shows the stop reason.
