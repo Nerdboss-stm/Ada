@@ -1,0 +1,9 @@
+#!/usr/bin/env -S uv run --quiet python
+"""./verify: Q&A proofs (PLAN B8). See scripts/verify_cli.py."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scripts.verify_cli import main  # noqa: E402
+
+sys.exit(main())
