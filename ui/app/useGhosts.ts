@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ghostSources,
-  mergeVersions,
   parseFixtures,
   parseFrameIds,
   pickFixtureLeader,
@@ -11,7 +10,6 @@ import {
   type VersionDoc,
 } from "@/lib/ghosts";
 import type { FramesDoc } from "@/lib/replay";
-import type { StreamMessage } from "@/lib/stream";
 
 /** One ghost: a recorded showcase frames doc, keyed by version (or fixture name), oldest first. */
 export type Ghost = { key: string; doc: FramesDoc };
@@ -40,28 +38,12 @@ function useLocalGhosts(sources: { name: string; url: string }[] | null): GhostS
   return state;
 }
 
-/** Stream mode: versions from the snapshot and change events; each showcase frames doc fetched once. */
-function useStreamGhosts(enabled: boolean): GhostState {
-  const [versions, setVersions] = useState<VersionDoc[]>([]);
+/** Stream mode: versions from the page's one stream; each showcase frames doc fetched once. */
+function useStreamGhosts(versions: VersionDoc[], streamError: string | null): GhostState {
   const [docs, setDocs] = useState<Record<string, FramesDoc>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const requested = useRef(new Set<string>());
-
-  useEffect(() => {
-    if (!enabled) return;
-    const source = new EventSource("/api/stream");
-    source.onmessage = (msg) => {
-      const data = JSON.parse(msg.data) as StreamMessage;
-      if (data.type === "snapshot") {
-        setVersions((prev) => mergeVersions(prev, data.versions as VersionDoc[]));
-      } else if (data.type === "change" && data.coll === "versions") {
-        setVersions((prev) => mergeVersions(prev, [data.doc as VersionDoc]));
-      } else if (data.type === "error") {
-        setError(data.message);
-      }
-    };
-    return () => source.close();
-  }, [enabled]);
+  const error = streamError ?? fetchError;
 
   const sources = useMemo(() => ghostSources(versions), [versions]);
 
@@ -73,7 +55,7 @@ function useStreamGhosts(enabled: boolean): GhostState {
         .then((doc) => setDocs((prev) => ({ ...prev, [framesId]: doc })))
         .catch((e: unknown) => {
           requested.current.delete(framesId);
-          setError(e instanceof Error ? e.message : String(e));
+          setFetchError(e instanceof Error ? e.message : String(e));
         });
     }
   }, [sources]);
@@ -85,7 +67,9 @@ function useStreamGhosts(enabled: boolean): GhostState {
   }, [sources, docs, versions, error]);
 }
 
-export function useGhosts(): GhostState {
+const NO_VERSIONS: VersionDoc[] = [];
+
+export function useGhosts(versions: VersionDoc[], streamError: string | null): GhostState {
   // Stage is client-only (ssr: false), so the query string is available on first render.
   const local = useMemo(() => {
     const q = new URLSearchParams(window.location.search);
@@ -93,6 +77,6 @@ export function useGhosts(): GhostState {
     return [...parseFixtures(q.get("fixtures")), ...parseFrameIds(q.get("frames"))];
   }, []);
   const fromLocal = useLocalGhosts(local);
-  const fromStream = useStreamGhosts(local === null);
+  const fromStream = useStreamGhosts(local === null ? versions : NO_VERSIONS, local === null ? streamError : null);
   return local ? fromLocal : fromStream;
 }

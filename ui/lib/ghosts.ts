@@ -12,7 +12,12 @@ export const FOLLOW_ALPHA = 0.05;
 export type VersionDoc = {
   _id: string;
   status?: string;
-  metrics?: { mean_distance_m?: number | null } | null;
+  metrics?: {
+    holdout_reliability_80?: number | null;
+    mean_distance_m?: number | null;
+    cost_per_run_usd?: number | null;
+    n?: number | null;
+  } | null;
   showcase_frames_id?: string | null;
   created_at?: string;
 };
@@ -50,15 +55,24 @@ export function ghostSources(versions: VersionDoc[]): { versionId: string; frame
     .map((v) => ({ versionId: v._id, framesId: v.showcase_frames_id as string }));
 }
 
-/** Highest metrics.mean_distance_m among accepted or baseline versions; null if none. */
+const finite = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+
+/**
+ * The leader, which is also the "current best" the claim is about: among accepted or baseline
+ * versions with a holdout reliability, the highest metrics.holdout_reliability_80, ties broken
+ * by the highest metrics.mean_distance_m, then the oldest. Null if none.
+ */
 export function pickLeader(versions: VersionDoc[]): string | null {
   let best: string | null = null;
+  let bestR = -Infinity;
   let bestD = -Infinity;
   for (const v of sortVersions(versions)) {
     if (v.status !== "accepted" && v.status !== "baseline") continue;
-    const d = v.metrics?.mean_distance_m;
-    if (typeof d !== "number" || !Number.isFinite(d)) continue;
-    if (d > bestD) {
+    const r = v.metrics?.holdout_reliability_80;
+    if (!finite(r)) continue;
+    const d = finite(v.metrics?.mean_distance_m) ? (v.metrics?.mean_distance_m as number) : -Infinity;
+    if (r > bestR || (r === bestR && d > bestD)) {
+      bestR = r;
       bestD = d;
       best = v._id;
     }

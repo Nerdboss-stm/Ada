@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test tests/*.test.ts",
-    "emit": "node scripts/emit.mjs"
+    "emit": "node scripts/emit.mjs",
+    "emit:edit": "node scripts/emit_edit.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

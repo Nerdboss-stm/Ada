@@ -44,16 +44,23 @@ test("ghost sources are versions with showcase_frames_id, oldest first", () => {
   ]);
 });
 
-test("leader is highest mean_distance_m among accepted or baseline only", () => {
+test("leader is reliability-first among accepted or baseline, distance breaks ties", () => {
+  const m = (r: number | null, d: number) => ({ holdout_reliability_80: r, mean_distance_m: d });
   const vs: VersionDoc[] = [
-    { _id: "v0", status: "baseline", metrics: { mean_distance_m: 1.2 } },
-    { _id: "v1", status: "rejected", metrics: { mean_distance_m: 9.9 } },
-    { _id: "v2", status: "frontier", metrics: { mean_distance_m: 8.0 } },
-    { _id: "v3", status: "accepted", metrics: { mean_distance_m: 3.4 } },
+    { _id: "v0", status: "baseline", metrics: m(0.4, 1.2) },
+    { _id: "v1", status: "rejected", metrics: m(1.0, 9.9) },
+    { _id: "v2", status: "frontier", metrics: m(1.0, 8.0) },
+    { _id: "v3", status: "accepted", metrics: m(0.8, 3.4) },
     { _id: "v4", status: "accepted", metrics: null },
+    { _id: "v5", status: "accepted", metrics: m(0.6, 20) }, // far but unreliable: never the leader
   ];
   assert.equal(pickLeader(vs), "v3");
-  assert.equal(pickLeader([{ _id: "v1", status: "rejected", metrics: { mean_distance_m: 5 } }]), null);
+  // Tie on reliability: farther wins; full tie: oldest keeps it.
+  assert.equal(pickLeader([...vs, { _id: "v6", status: "accepted", metrics: m(0.8, 3.5) }]), "v6");
+  assert.equal(pickLeader([...vs, { _id: "v7", status: "accepted", metrics: m(0.8, 3.4) }]), "v3");
+  // No holdout reliability: not eligible.
+  assert.equal(pickLeader([{ _id: "v8", status: "accepted", metrics: m(null, 30) }]), null);
+  assert.equal(pickLeader([{ _id: "v1", status: "rejected", metrics: m(1, 5) }]), null);
 });
 
 const doc = (xs: number[], fps = 10, kind: FramesDoc["kind"] = "showcase"): FramesDoc => ({

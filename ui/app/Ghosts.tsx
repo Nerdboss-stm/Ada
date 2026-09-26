@@ -13,6 +13,7 @@ import {
   sharedFrameIndex,
   type Vec3,
 } from "@/lib/ghosts";
+import { formatMeters } from "@/lib/overlays";
 import { geomShape, poseParts, type Manifest } from "@/lib/replay";
 import type { Ghost } from "./useGhosts";
 
@@ -175,6 +176,38 @@ export function GhostBodies({
       ))}
     </group>
   );
+}
+
+/**
+ * Reports the leader's recorded torso x at the shown frame (no React re-render, no
+ * interpolation): the same shared clock and frame index the bodies use. Called on change only.
+ */
+export function LeaderReadout({
+  ghosts,
+  leader,
+  epoch,
+  onText,
+}: {
+  ghosts: Ghost[];
+  leader: string | null;
+  epoch: Epoch;
+  onText: (text: string) => void;
+}) {
+  const cycle = useMemo(() => cycleSeconds(ghosts.map((g) => g.doc)), [ghosts]);
+  const ghost = ghosts.find((g) => g.key === leader);
+  const last = useRef<string | null>(null);
+  useFrame(({ clock }) => {
+    if (!ghost) return;
+    const { doc } = ghost;
+    const i = sharedFrameIndex(playbackTime(epoch, clock.elapsedTime), doc.fps, doc.frames.length, cycle);
+    const frame = doc.frames[i];
+    if (!frame) return;
+    const text = formatMeters(frame.torso[0]);
+    if (text === last.current) return;
+    last.current = text;
+    onText(text);
+  });
+  return null;
 }
 
 export function GhostCamera({ ghosts, leader, epoch }: { ghosts: Ghost[]; leader: string | null; epoch: Epoch }) {

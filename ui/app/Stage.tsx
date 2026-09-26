@@ -1,11 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Lightformer, OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { Manifest } from "@/lib/replay";
-import { ADA, GhostBodies, GhostCamera } from "./Ghosts";
+import { ADA, GhostBodies, GhostCamera, LeaderReadout } from "./Ghosts";
+import Overlays from "./Overlays";
+import { useAdaStream } from "./useAdaStream";
 import { useGhosts } from "./useGhosts";
 
 // SPEC §6 "Scene".
@@ -99,8 +101,14 @@ function Lights() {
 export default function Stage() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const { ghosts: loaded, leader, error: ghostError } = useGhosts();
+  const stream = useAdaStream();
+  const { ghosts: loaded, leader, error: ghostError } = useGhosts(stream.versions, stream.error);
   const epoch = useRef<number | null>(null);
+  const distanceRef = useRef<HTMLSpanElement | null>(null);
+  // Written straight to the DOM every recorded frame; React never re-renders for it.
+  const showDistance = useCallback((text: string) => {
+    if (distanceRef.current) distanceRef.current.textContent = text;
+  }, []);
   const orbit = useMemo(() => new URLSearchParams(window.location.search).has("orbit"), []);
 
   useEffect(() => {
@@ -122,9 +130,10 @@ export default function Stage() {
     () => (manifest ? loaded.filter((g) => g.doc.manifest_version === manifest.manifest_version) : []),
     [loaded, manifest],
   );
+  const leaderGhost = ghosts.find((g) => g.key === leader);
   const mismatched = manifest ? loaded.length - ghosts.length : 0;
   const error =
-    loadError ?? ghostError ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
+    loadError ?? ghostError ?? stream.error ?? (mismatched > 0 ? `${mismatched} frames doc(s) skipped: manifest_version mismatch` : null);
 
   return (
     <div className="relative h-dvh w-full" style={{ background: BG }}>
@@ -150,13 +159,25 @@ export default function Stage() {
         ) : (
           <GhostCamera ghosts={ghosts} leader={leader} epoch={epoch} />
         )}
+        <LeaderReadout ghosts={ghosts} leader={leader} epoch={epoch} onText={showDistance} />
       </Canvas>
+      <Overlays
+        leaderVersion={leaderGhost?.doc.version_id ?? null}
+        distanceRef={distanceRef}
+        versions={stream.versions}
+        edits={stream.edits}
+        events={stream.events}
+      />
       {ghosts.length === 0 && !error && (
         <p className="pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-lg font-medium tracking-wide text-[#7fb7ff]/80">
           Waiting for Ada&rsquo;s first recorded run
         </p>
       )}
-      {error && <p className="absolute left-4 top-4 text-sm text-red-400">{error}</p>}
+      {error && (
+        <p className="absolute left-1/2 top-4 -translate-x-1/2 text-sm" style={{ color: "#FF4A3D" }}>
+          failed: {error}
+        </p>
+      )}
     </div>
   );
 }
