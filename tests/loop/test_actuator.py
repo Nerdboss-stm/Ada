@@ -184,6 +184,25 @@ def test_reject_keeps_head(world, adb):
     assert ev[1]["payload"]["reason"] == REASON
 
 
+def test_precheck_reject_stores_null_delta(world, adb):
+    res = gate_result("rejected", rel=0.0, parent=0.5, reason="model outside the cheap tier",
+                      cost=0.0, n=0)
+    res["train"]["mean_distance_m"] = 0.0
+    res["stages"] = {"gate.verifier": "skipped", "gate.gpa": "skipped", "gate.meta": "skipped",
+                     "gate.constraints": "fail"}
+    world.proposals = [P_TEMP]
+    world.results = [res]
+    r = actuator.run_round(world.head_id, db_name=ADA_TEST)
+
+    (bad,) = r["rejected"]
+    assert r["decisions"][0]["actual_delta"] is None
+    e = adb.edits.find_one({"to_version": bad})
+    assert (e["verdict"], e["reason"], e["actual_delta"]) == \
+        ("rejected", "model outside the cheap tier", None)
+    decision = actuator_events(adb, r["round_id"])[1]
+    assert decision["status"] == "fail" and decision["payload"]["actual_delta"] is None
+
+
 def test_stale_proposal_is_skipped(world, adb):
     world.proposals = [P_TEMP, P_STALE, P_RULE]
     world.results = [gate_result(), gate_result(rel=0.65, parent=0.6)]

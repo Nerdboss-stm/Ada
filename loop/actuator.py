@@ -7,7 +7,8 @@ open round is refused by the database; closing $unsets open_lock (NOTES [B0]: ne
 The head is sensed, the controller proposes, and each proposal in order is re-applied to the
 current head (stale ones are skipped), given the next id v{N}, written to `edits` with verdict
 null, sent to gate.pipeline.run_gate (NOTES [A7]), then the child `versions` document is
-written and the edit gets its verdict. An accepted child becomes the head and is scored on
+written and the edit gets its verdict (actual_delta null when the gate rolled nothing,
+train.n 0). An accepted child becomes the head and is scored on
 holdout (k 3) with its showcase run recorded. No new proposal starts once the round's spend
 or time has reached its budget; the reason lands in the round document.
 """
@@ -184,7 +185,9 @@ def actuate(p: EditProposal, head: Version, index: int, round_id: str, db_name: 
                                     "metrics": metrics.model_dump()})
     db(db_name).versions.insert_one(child.model_dump(by_alias=True))
 
-    actual = round(train["reliability"] - result["parent_train_reliability"], 4)
+    # n == 0: rejected at the constraints pre-check, nothing rolled, so there is no delta
+    actual = (round(train["reliability"] - result["parent_train_reliability"], 4)
+              if train["n"] else None)
     frames_id = result.get("frames_id")
     db(db_name).edits.update_one({"_id": edit.id}, {"$set": {
         "verdict": verdict, "reason": result.get("reason"), "actual_delta": actual,
