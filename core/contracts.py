@@ -21,7 +21,7 @@ Usd = Annotated[float, AfterValidator(lambda v: round(v, 6))]
 
 Split = Literal["train", "holdout", "showcase"]
 RoundStatus = Literal["open", "closed"]
-VersionStatus = Literal["baseline", "frontier", "accepted", "rejected"]
+VersionStatus = Literal["baseline", "frontier", "candidate", "accepted", "rejected"]
 EditOrigin = Literal["model", "probe", "cli"]
 Verdict = Literal["accepted", "rejected"]
 FrameKind = Literal["showcase", "frontier", "rejected"]
@@ -79,6 +79,8 @@ class Round(_Doc):
     budget_usd: Usd
     budget_s: float
     open_lock: bool | None = None
+    stop_reason: str | None = None
+    spent_usd: float = 0.0
 
 
 class Harness(_Doc):
@@ -107,6 +109,18 @@ class Version(_Doc):
     created_at: datetime
 
 
+class Baseline(_Doc):
+    """One frozen `baselines` document per version (scripts/baseline.py, SPEC §5)."""
+
+    id: DocId = Field(alias="_id")  # = version_id
+    version_id: str
+    split: Split
+    k: int
+    metrics: Metrics
+    sha256: str  # over the version's sorted run results on `split`
+    created_at: datetime
+
+
 class Edit(_Doc):
     id: DocId = Field(alias="_id")
     round_id: str | None = None
@@ -119,6 +133,7 @@ class Edit(_Doc):
     old: Any = None
     new: Any = None
     rationale: str = ""
+    evidence_trace_ids: list[str] = Field(default_factory=list)
     predicted_delta: float | None = None
     actual_delta: float | None = None
     verdict: Verdict | None = None
