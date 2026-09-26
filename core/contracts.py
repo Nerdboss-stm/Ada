@@ -251,6 +251,27 @@ class Scoreboard(_Doc):
     physics_rejected_judge_passed: int
 
 
+class SnapshotGhost(_Doc):
+    version_id: str
+    frames_id: str | None = None  # the version's showcase_frames_id
+
+
+class Snapshot(_Doc):
+    """One `snapshots` document (scripts/pin_snapshot.py): the ids the demo scenes play,
+    frozen at pin time while the loop keeps writing."""
+
+    id: DocId = Field(alias="_id")
+    pinned_at: datetime
+    best_version: str | None = None  # loop.run.pick_leader
+    v0: str | None = None
+    frontier: str | None = None
+    attempt_edit_ids: list[str] = Field(default_factory=list)  # ui/lib/attempts.ts orderAttempts
+    cheat_edit_id: str | None = None  # what api/cheat shows as the card
+    swaps_id: str | None = None
+    scoreboard_id: str | None = None
+    ghosts: list[SnapshotGhost] = Field(default_factory=list)  # oldest first
+
+
 class Skill(_Doc):
     id: DocId = Field(alias="_id")
     version_id: str
