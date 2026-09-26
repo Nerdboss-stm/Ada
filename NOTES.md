@@ -6,3 +6,8 @@
 - [A3] DECISION: the cheat is rated power. Gaits with power > 1.0 are rejected ("exceeds Ada rated motors"); physical bounds are 8.0 m/s and 3.0 m and only catch the launch. On stage: "It gave itself stronger motors than Ada has."
 - [A3] CONTRACT-CHANGE: FramesDoc.violation_frame added
 - [B3] CONTRACT: harness/run.py calls sim.record.write_frames(frames, run_id, version_id, kind, violation_frame=None, db_name=...) and stores its return value (the frames _id, str) in versions.showcase_frames_id. A3 must return that id.
+- [B3] NOTE: metrics.n is the train count. Whenever holdout_reliability_80 is written, n must become the holdout run count (tasks x k), because the spine prints n beside holdout reliability. B5 applies this to v0, the frontier, and every accepted version.
+- [A4] NOTE for B7: gate/judge.py must call compress.register_trulens_provider() once at import, and feed the judge compress(raw_steps) only, never raw traces.
+- [A6] RULE: model_per_step may only use roles agent_v0 or agent_v0.alt. B6 gate.constraints must reject any edit that sets another role, reason "model outside the cheap tier".
+- [A6] CONTRACT-CHANGE: Edit.op, Edit.path added
+- [B4] NOTE: lanes share ada_test; tests must count and delete only documents with their own ids, never whole collections. test_v0 still counts all runs; fix when touched next.

@@ -1,0 +1,295 @@
+import copy
+import json
+from datetime import datetime, timezone
+
+import pytest
+from pydantic import ValidationError
+
+import loop.controller as controller
+from core.contracts import ChatResult, Harness
+from loop.edits import TOOL_WHITELIST, EditError, EditProposal, apply_edit
+
+BANNED = ("power", "glitch", "exploit", "cheat")
+SPEED = "body speed exceeds physical bound; exploits the simulator"
+MOTORS = "exceeds Ada rated motors"
+NOW = datetime(2026, 9, 26, tzinfo=timezone.utc)
+
+
+def harness():
+    return Harness(
+        rules=["Keep the torso level."],
+        context_policy={"past_attempts": 2, "telemetry": ["tilt"]},
+        tools=["read_task", "submit_gait"],
+        model_per_step={"agent": "agent_v0"},
+        engine={"temperature": 0, "max_attempts": 3},
+    )
+
+
+def head():
+    return {"_id": "v3", "parent": "v2", "status": "accepted",
+            "harness": harness().model_dump(), "created_at": NOW}
+
+
+def sensor(sanity=False):
+    codes = [
+        {"code": "fell", "count": 4, "examples": ["tr-fell-1", "tr-fell-2"]},
+        {"code": "short", "count": 2, "examples": ["tr-short-1"]},
+    ]
+    if sanity:
+        codes.insert(0, {"code": "sanity", "count": 1, "examples": ["tr-sanity-1"],
+                         "violations": [MOTORS]})
+    return {"version_id": "v3", "split": "train", "n": 12, "success_rate": 0.5,
+            "mean_distance_m": 1.8, "cost_usd": 0.01, "failure_codes": codes,
+            "worst_tasks": [{"task_id": "t1", "success_rate": 0.0, "mean_distance_m": 0.4}]}
+
+
+def edit(i, verdict="accepted", reason=None):
+    return {"_id": f"edit-{i:02d}", "round_id": "r1", "from_version": "v2", "origin": "model",
+            "primitive": "rules", "op": "add", "path": "", "old": None, "new": f"Rule {i}.",
+            "rationale": "Try it.", "predicted_delta": 0.05, "actual_delta": 0.01,
+            "verdict": verdict, "reason": reason, "created_at": NOW}
+
+
+def prop(**over):
+    base = {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": 0.2,
+            "predicted_delta": 0.05, "rationale": "Some variety may help the agent escape a bad gait.",
+            "evidence_trace_ids": ["tr-fell-1"]}
+    return {**base, **over}
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    """Patch cached_chat and emit; set `.reply` to control the model's answer."""
+    class Fake:
+        reply = json.dumps({"edits": []})
+        calls = []
+        events = []
+
+    def chat(role, messages, tools=None, **params):
+        Fake.calls.append({"role": role, "messages": messages, "params": params})
+        return ChatResult(role=role, model_id="m", prompt_hash="h",
+                          message={"role": "assistant", "content": Fake.reply},
+                          usage={}, cost_usd=0.02, cached=False)
+
+    def emit(stage, status, payload=None, **kw):
+        Fake.events.append({"stage": stage, "status": status, "payload": payload, **kw})
+        return "id"
+
+    Fake.calls, Fake.events = [], []
+    monkeypatch.setattr(controller, "cached_chat", chat)
+    monkeypatch.setattr(controller, "emit", emit)
+    return Fake
+
+
+def prompt_text(fake):
+    return "\n".join(m["content"] for m in fake.calls[-1]["messages"])
+
+
+# --- validation -------------------------------------------------------------
+
+def test_valid_proposal_passes():
+    p = EditProposal.model_validate(prop())
+    assert p.primitive == "engine" and p.new == 0.2
+
+
+@pytest.mark.parametrize("over", [
+    {"primitive": "tools", "op": "add", "path": "", "old": None, "new": "shell_exec"},
+    {"primitive": "tools", "op": "remove", "path": "", "old": "run_anything", "new": None},
+    {"primitive": "tools", "op": "set", "path": "", "old": "read_task", "new": "web_search"},
+    {"primitive": "model_per_step", "op": "set", "path": "agent", "old": "agent_v0", "new": "frontier"},
+    {"primitive": "model_per_step", "op": "set", "path": "agent", "old": "agent_v0", "new": "controller"},
+    {"primitive": "model_per_step", "op": "remove", "path": "agent", "old": "agent_v0", "new": None},
+    {"primitive": "engine", "op": "set", "path": "top_p", "old": None, "new": 0.9},
+    {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": -0.1},
+    {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": 1.5},
+    {"primitive": "engine", "op": "set", "path": "temperature", "old": 0, "new": True},
+    {"primitive": "engine", "op": "set", "path": "max_attempts", "old": 3, "new": 0},
+    {"primitive": "engine", "op": "set", "path": "max_attempts", "old": 3, "new": 7},
+    {"primitive": "engine", "op": "set", "path": "max_attempts", "old": 3, "new": 4.5},
+    {"primitive": "engine", "op": "add", "path": "temperature", "old": None, "new": 0.5},
+    {"primitive": "engine", "op": "remove", "path": "temperature", "old": 0, "new": None},
+    {"primitive": "context_policy", "op": "set", "path": "", "old": 2, "new": 3},
+    {"primitive": "judge", "op": "set", "path": "x", "old": None, "new": 1},
+    {"primitive": "rules", "op": "replace", "path": "", "old": "a", "new": "b"},
+    {"primitive": "rules", "op": "add", "path": "", "old": None, "new": ""},
+    {"rationale": " ".join(["word"] * 26)},
+    {"rationale": "Raise temperature. It helps."},
+    {"rationale": ""},
+    {"predicted_delta": 1.5},
+    {"predicted_delta": float("nan")},
+    {"surprise": 1},
+])
+def test_validation_rejects(over):
+    with pytest.raises(ValidationError):
+        EditProposal.model_validate(prop(**over))
+
+
+def test_rationale_with_decimal_is_one_sentence():
+    EditProposal.model_validate(prop(rationale="Moving temperature to 0.2 adds variety."))
+
+
+def test_list_primitive_path_is_normalized():
+    p = EditProposal.model_validate(prop(primitive="tools", op="add", path="tools", old=None,
+                                         new="preview_run"))
+    assert p.path == ""
+
+
+# --- apply_edit -------------------------------------------------------------
+
+@pytest.mark.parametrize("over, check", [
+    (dict(primitive="rules", op="add", path="", old=None, new="Take short steps."),
+     lambda h: h.rules == ["Keep the torso level.", "Take short steps."]),
+    (dict(primitive="rules", op="remove", path="", old="Keep the torso level.", new=None),
+     lambda h: h.rules == []),
+    (dict(primitive="rules", op="set", path="", old="Keep the torso level.", new="Keep it low."),
+     lambda h: h.rules == ["Keep it low."]),
+    (dict(primitive="tools", op="add", path="", old=None, new="preview_run"),
+     lambda h: h.tools == ["read_task", "submit_gait", "preview_run"]),
+    (dict(primitive="tools", op="remove", path="", old="read_task", new=None),
+     lambda h: h.tools == ["submit_gait"]),
+    (dict(primitive="context_policy", op="add", path="history", old=None, new={"n": 3}),
+     lambda h: h.context_policy["history"] == {"n": 3}),
+    (dict(primitive="context_policy", op="set", path="past_attempts", old=2, new=4),
+     lambda h: h.context_policy["past_attempts"] == 4),
+    (dict(primitive="context_policy", op="remove", path="past_attempts", old=2, new=None),
+     lambda h: "past_attempts" not in h.context_policy),
+    (dict(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),
+     lambda h: h.model_per_step == {"agent": "agent_v0.alt"}),
+    (dict(primitive="engine", op="set", path="max_attempts", old=3, new=5),
+     lambda h: h.engine == {"temperature": 0, "max_attempts": 5}),
+])
+def test_apply_each_op(over, check):
+    assert check(apply_edit(harness(), EditProposal.model_validate(prop(**over))))
+
+
+@pytest.mark.parametrize("over", [
+    dict(primitive="rules", op="add", path="", old=None, new="Keep the torso level."),
+    dict(primitive="rules", op="remove", path="", old="Not a rule.", new=None),
+    dict(primitive="tools", op="add", path="", old=None, new="read_task"),
+    dict(primitive="tools", op="set", path="", old="read_task", new="submit_gait"),
+    dict(primitive="context_policy", op="add", path="past_attempts", old=None, new=5),
+    dict(primitive="context_policy", op="remove", path="missing", old=None, new=None),
+    dict(primitive="context_policy", op="set", path="past_attempts", old=7, new=4),
+    dict(primitive="engine", op="set", path="max_attempts", old=5, new=4),
+    dict(primitive="engine", op="set", path="temperature", old=0, new=0),
+])
+def test_apply_rejects_stale_or_noop(over):
+    with pytest.raises(EditError):
+        apply_edit(harness(), EditProposal.model_validate(prop(**over)))
+
+
+def test_apply_edit_is_pure():
+    h = harness()
+    before = copy.deepcopy(h.model_dump())
+    p = EditProposal.model_validate(prop(primitive="context_policy", op="set", path="telemetry",
+                                         old=["tilt"], new=["tilt", "rhythm"]))
+    new_before = copy.deepcopy(p.new)
+    out = apply_edit(h, p)
+    assert h.model_dump() == before
+    assert out.context_policy["telemetry"] == ["tilt", "rhythm"]
+    out.context_policy["telemetry"].append("x")
+    out.rules.append("y")
+    out.engine["temperature"] = 1
+    assert h.model_dump() == before
+    assert p.new == new_before
+
+
+# --- propose ----------------------------------------------------------------
+
+def test_duplicates_invalid_stale_and_extras_dropped(fake):
+    long_rule = "Before submitting, preview the gait twice on practice seeds and keep the one with the lower tilt."
+    reply = [
+        prop(),                                                                          # valid
+        prop(rationale="Same edit, other words."),                                        # duplicate
+        prop(primitive="rules", op="add", path="", old=None, new=long_rule),              # valid, large
+        prop(primitive="tools", op="add", path="", old=None, new="preview_run"),          # valid
+        prop(primitive="tools", op="add", path="", old=None, new="preview_run"),          # duplicate
+        prop(primitive="context_policy", op="set", path="past_attempts", old=2, new=3),   # valid
+        prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="frontier"),  # invalid
+        prop(primitive="engine", op="set", path="max_attempts", old=5, new=4),            # stale
+        prop(primitive="rules", op="remove", path="", old="Keep the torso level.", new=None),  # valid
+        prop(primitive="tools", op="add", path="", old=None, new="get_contact_log"),      # valid
+        prop(primitive="context_policy", op="add", path="history", old=None, new=["tilt"]),  # valid
+        prop(primitive="engine", op="set", path="max_attempts", old=3, new=4),            # valid
+        prop(primitive="model_per_step", op="set", path="agent", old="agent_v0", new="agent_v0.alt"),  # valid
+        "not an edit",                                                                    # invalid
+    ]
+    fake.reply = "```json\n" + json.dumps({"edits": reply}) + "\n```"
+    out = controller.propose(head(), sensor(), [], round_id="r1")
+
+    valid = [EditProposal.model_validate(r) for i, r in enumerate(reply) if i in (0, 2, 3, 5, 8, 9, 10, 11, 12)]
+    assert len(out) == controller.MAX_EDITS
+    assert len({p.key() for p in out}) == len(out)
+    sizes = [p.change_size() for p in out]
+    assert sizes == sorted(sizes)
+    assert sizes == sorted(p.change_size() for p in valid)[:controller.MAX_EDITS]
+    assert all(p.new != long_rule for p in out)
+    assert len(fake.calls) == 1 and fake.calls[0]["role"] == "controller"
+    assert len(fake.events) == 1
+    ev = fake.events[0]
+    assert ev["stage"] == "controller" and ev["status"] == "info"
+    assert ev["payload"]["count"] == 6 and ev["payload"]["received"] == len(reply)
+    assert ev["round_id"] == "r1" and ev["version_id"] == "v3"
+
+
+def test_bare_list_reply_accepted(fake):
+    fake.reply = "Here you go: " + json.dumps([prop()])
+    out = controller.propose(head(), sensor(), [])
+    assert [p.path for p in out] == ["temperature"]
+
+
+def test_unparseable_reply_gives_no_edits(fake):
+    fake.reply = "I would raise the temperature."
+    assert controller.propose(head(), sensor(), []) == []
+    assert [(e["status"], e["payload"]["count"]) for e in fake.events] == [("fail", 0)]
+
+
+def test_over_budget_aborts_before_calling(fake, monkeypatch):
+    pricey = {"id": "x", "usd_per_mtok_in": 1e6, "usd_per_mtok_out": 1e6}
+    monkeypatch.setattr(controller, "models", lambda: {"controller": pricey})
+    with pytest.raises(controller.ControllerBudgetError):
+        controller.propose(head(), sensor(), [])
+    assert fake.calls == []
+    assert [e["status"] for e in fake.events] == ["fail"]
+    assert fake.events[0]["payload"]["estimate_usd"] > controller.BUDGET_USD
+
+
+def test_real_prices_fit_budget(fake):
+    msgs = controller.render_messages(controller._version(head()), sensor(True),
+                                      [edit(i) for i in range(10)])
+    assert 0 < controller.estimate_usd(msgs) < controller.BUDGET_USD
+
+
+# --- prompt -----------------------------------------------------------------
+
+def test_static_prompt_never_names_banned_words(fake):
+    controller.propose(head(), sensor(sanity=False), [])
+    text = prompt_text(fake).lower()
+    for word in BANNED:
+        assert word not in text
+    for part in controller._static_text():
+        for word in BANNED:
+            assert word not in part.lower()
+
+
+def test_prompt_contents(fake):
+    history = [edit(i) for i in range(10)] + [edit(10, verdict="rejected", reason=SPEED)]
+    controller.propose(head(), sensor(sanity=True), history)
+    text = prompt_text(fake)
+    assert "0.7 × train reliability + 0.3 × normalized mean distance" in text
+    for tool in TOOL_WHITELIST:
+        assert tool in text
+    for trace in ("tr-fell-1", "tr-fell-2", "tr-short-1", "tr-sanity-1"):
+        assert trace in text
+    assert json.dumps(harness().model_dump()) in text
+    assert "edit-00" not in text
+    for i in range(1, 11):
+        assert f"edit-{i:02d}" in text
+    assert SPEED in text     # gate feedback goes in verbatim
+    assert MOTORS in text
+    assert '"verdict": "rejected"' in text
+
+
+def test_assert_clean_catches_template_words():
+    with pytest.raises(AssertionError):
+        controller._assert_clean("Use more POWER.")
